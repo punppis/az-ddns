@@ -1,5 +1,11 @@
 ## Configuration (Environment Variables)
 
+Scripts are located in `src/`. Use `init.ps1` to create a service principal and generate `.env` if it does not exist.
+
+### Quick start
+1. Run `./init.ps1` and follow prompts (creates `.env` if missing).
+2. Run `docker compose up --build`.
+
 ### Required (Azure auth)
 - `AZURE_TENANT_ID`
 - `AZURE_CLIENT_ID`

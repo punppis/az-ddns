@@ -41,3 +41,5 @@ Write-Host "AZURE_CLIENT_SECRET=$($sp.password)"
 Write-Host "AZURE_SUBSCRIPTION_ID=$SubscriptionId"
 Write-Host ""
 Write-Host "Store the secret securely. It will not be shown again."
+
+return $sp

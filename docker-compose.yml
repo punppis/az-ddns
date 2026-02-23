@@ -1,7 +1,10 @@
 services:
   dns-updater:
-    build: .
+    build:
+      context: ./src
+      dockerfile: Dockerfile
     environment:
+      PRIORITY_DOMAIN: ${PRIORITY_DOMAIN}
       AZURE_TENANT_ID: ${AZURE_TENANT_ID}
       AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
       AZURE_SUBSCRIPTION_ID: ${AZURE_SUBSCRIPTION_ID}
@@ -14,6 +17,8 @@ services:
 
       DNS_MX_TARGET: ${DNS_MX_TARGET}
       DNS_CNAME_TARGET: ${DNS_CNAME_TARGET}
+
+      LOG_LEVEL: INFO
 
       # Optional: static A target (otherwise dynamic)
       # DNS_A_TARGET: "85.29.89.130"

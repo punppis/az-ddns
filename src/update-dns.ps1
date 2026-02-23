@@ -104,6 +104,7 @@ $ResourceGroup = Get-Env "AZURE_RESOURCE_GROUP"
 
 $DnsMxTarget    = Get-Env "DNS_MX_TARGET"
 $DnsCnameTarget = Get-Env "DNS_CNAME_TARGET"
+$script:PriorityDomain = Get-Env "PRIORITY_DOMAIN"  # optional
 $DnsATarget     = Get-Env "DNS_A_TARGET"   # optional
 
 $RunOnce        = Get-Bool "RUN_ONCE"
@@ -180,6 +181,7 @@ if (-not [string]::IsNullOrWhiteSpace($IpStateFile)) {
 
 Log "INFO" ("A source: " + $aSource)
 Log "INFO" ("State file: " + $stateDesc)
+Log "DEBUG" ("PRIORITY_DOMAIN: " + $(if (-not [string]::IsNullOrWhiteSpace($script:PriorityDomain)) { $script:PriorityDomain } else { "(not set)" }))
 
 # -----------------------------
 # Public IP / Desired IP
@@ -192,6 +194,24 @@ function Get-PublicIp {
         } catch { }
     }
     Fail "Public IP lookup failed (all services failed)."
+}
+
+function Get-ReverseDomain([string]$Ip) {
+    try {
+        $ptr = Resolve-DnsName -Name $Ip -Type PTR -ErrorAction Stop | Select-Object -First 1
+        if ($ptr -and $ptr.NameHost) {
+            return $ptr.NameHost.ToString().Trim().TrimEnd('.')
+        }
+    } catch { }
+
+    try {
+        $entry = [System.Net.Dns]::GetHostEntry($Ip)
+        if ($entry -and $entry.HostName) {
+            return $entry.HostName.ToString().Trim().TrimEnd('.')
+        }
+    } catch { }
+
+    return $null
 }
 
 function Ensure-StateDir([string]$Path) {
@@ -387,6 +407,38 @@ function Process-Once {
     if ($zones.Count -eq 0) {
         Log "WARN" "No zones found in resource group '$ResourceGroup'."
         return
+    }
+
+    $priorityEnv = $script:PriorityDomain
+    if ([string]::IsNullOrWhiteSpace($priorityEnv)) {
+        $priorityEnv = Get-Env "PRIORITY_DOMAIN"
+        $script:PriorityDomain = $priorityEnv
+    }
+    Log "DEBUG" ("PRIORITY_DOMAIN (runtime): " + $(if (-not [string]::IsNullOrWhiteSpace($priorityEnv)) { $priorityEnv } else { "(not set)" }))
+    $prioritySource = $null
+    $priorityDomain = $null
+    $reverseDomain = Get-ReverseDomain -Ip $desiredIp
+    if ($reverseDomain) {
+        $priorityDomain = $reverseDomain.Trim().TrimEnd('.')
+        $prioritySource = "reverse-dns"
+    } elseif (-not [string]::IsNullOrWhiteSpace($priorityEnv)) {
+        $priorityDomain = $priorityEnv.Trim().TrimEnd('.')
+        $prioritySource = "env"
+    }
+
+    if ($priorityDomain) {
+        Log "DEBUG" "Priority domain ($prioritySource): $priorityDomain"
+        $priorityLower = $priorityDomain.ToLowerInvariant()
+        $matchingZone = $zones | Where-Object { $priorityLower.EndsWith($_.ToLowerInvariant()) } | Sort-Object Length -Descending | Select-Object -First 1
+        if ($matchingZone) {
+            Log "DEBUG" "Prioritize domain $matchingZone"
+            $matchLower = $matchingZone.ToLowerInvariant()
+            $zones = @($matchingZone) + ($zones | Where-Object { $_.ToLowerInvariant() -ne $matchLower })
+        } else {
+            Log "DEBUG" "Priority domain did not match any zone"
+        }
+    } else {
+        Log "DEBUG" "No priority domain (reverse DNS lookup failed for $desiredIp)"
     }
 
     $aUpdated = 0
