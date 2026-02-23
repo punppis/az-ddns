@@ -431,7 +431,7 @@ function Process-Once {
         $priorityLower = $priorityDomain.ToLowerInvariant()
         $matchingZone = $zones | Where-Object { $priorityLower.EndsWith($_.ToLowerInvariant()) } | Sort-Object Length -Descending | Select-Object -First 1
         if ($matchingZone) {
-            Log "DEBUG" "Prioritize domain $matchingZone"
+            Log "INFO" "Prioritize domain $matchingZone"
             $matchLower = $matchingZone.ToLowerInvariant()
             $zones = @($matchingZone) + ($zones | Where-Object { $_.ToLowerInvariant() -ne $matchLower })
         } else {
