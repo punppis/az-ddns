@@ -43,7 +43,27 @@ State file behavior:
 # Logging
 # -----------------------------
 function TS { (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
-function Log([string]$Level, [string]$Msg) { Write-Host "[$(TS)] [$Level] $Msg" }
+
+$LogLevels = @{
+    DEBUG = 10
+    INFO  = 20
+    WARN  = 30
+    ERROR = 40
+}
+
+$LogLevel = [Environment]::GetEnvironmentVariable("LOG_LEVEL")
+if ([string]::IsNullOrWhiteSpace($LogLevel)) { $LogLevel = "INFO" }
+$LogLevel = $LogLevel.ToUpperInvariant()
+if (-not $LogLevels.ContainsKey($LogLevel)) { $LogLevel = "INFO" }
+
+function Log([string]$Level, [string]$Msg) {
+    $lvl = $Level.ToUpperInvariant()
+    if (-not $LogLevels.ContainsKey($lvl)) { $lvl = "INFO" }
+    if ($LogLevels[$lvl] -ge $LogLevels[$LogLevel]) {
+        Write-Host "[$(TS)] [$lvl] $Msg"
+    }
+}
+
 function Fail([string]$Msg) { throw "[$(TS)] [ERROR] $Msg" }
 
 # -----------------------------
@@ -211,6 +231,28 @@ function RecordSet-Exists([string]$Zone, [string]$Name, [string]$Type, [string]$
     return ($LASTEXITCODE -eq 0)
 }
 
+function Get-MxRootRecord([string]$Zone, [string]$Rg) {
+    $json = az network dns record-set mx list -g $Rg -z $Zone -o json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($json)) { return $null }
+    try {
+        $records = $json | ConvertFrom-Json
+        return $records | Where-Object { $_.name -eq "@" } | Select-Object -First 1
+    } catch {
+        return $null
+    }
+}
+
+function Get-CnameWildcardRecord([string]$Zone, [string]$Rg) {
+    $json = az network dns record-set cname list -g $Rg -z $Zone -o json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($json)) { return $null }
+    try {
+        $records = $json | ConvertFrom-Json
+        return $records | Where-Object { $_.name -eq "*" } | Select-Object -First 1
+    } catch {
+        return $null
+    }
+}
+
 function Get-ZoneRootAIPs([string]$Zone, [string]$Rg) {
     $json = az network dns record-set a show -g $Rg -z $Zone -n "@" -o json 2>$null
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($json)) { return @() }
@@ -231,80 +273,93 @@ function Replace-ZoneRootA([string]$Zone, [string]$DesiredIp, [string]$Rg, [int]
 }
 
 function Ensure-MX([string]$Zone, [string]$Rg) {
-    $exists = RecordSet-Exists -Zone $Zone -Name "@" -Type "mx" -Rg $Rg
+    $record = Get-MxRootRecord -Zone $Zone -Rg $Rg
+    $exists = $null -ne $record
     $mxMatch = $false
     if ($exists -and -not $ForceMx) {
-        # Check if MX record matches target
-        $json = az network dns record-set mx show -g $Rg -z $Zone -n "@" -o json 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($json)) {
-            try {
-                $obj = $json | ConvertFrom-Json
-                if ($obj.mxRecords.Count -eq 1) {
-                    $mxExchange = $obj.mxRecords[0].exchange.ToString().Trim()
-                    $mxPref = [int]$obj.mxRecords[0].preference
-                    $targetExchange = $DnsMxTarget.ToString().Trim()
-                    $targetPref = [int]$MxPreference
-                    if ($mxExchange -eq $targetExchange -and $mxPref -eq $targetPref) {
-                        $mxMatch = $true
-                    } else {
-                        Log "DEBUG" "MX(@) compare: existing='$mxExchange'/$mxPref desired='$targetExchange'/$targetPref"
-                    }
-                } else {
-                    Log "DEBUG" "MX(@) record count: $($obj.mxRecords.Count) (should be 1)"
+        try {
+            $mxRecords = $record.mxRecords
+            if ($mxRecords -and $mxRecords.Count -eq 1) {
+                $mxExchange = $mxRecords[0].exchange.ToString().Trim()
+                $mxPref = [int]$mxRecords[0].preference
+                $targetExchange = $DnsMxTarget.ToString().Trim()
+                $targetPref = [int]$MxPreference
+                Log "DEBUG" "MX(@) compare for domain $($Zone): existing='$mxExchange'/$mxPref desired='$targetExchange'/$targetPref"
+                if ($mxExchange -eq $targetExchange -and $mxPref -eq $targetPref) {
+                    $mxMatch = $true
                 }
-            } catch {}
-        }
+            } else {
+                $count = if ($mxRecords) { $mxRecords.Count } else { 0 }
+                Log "DEBUG" "MX(@) record count for domain $($Zone): $count (should be 1)"
+            }
+        } catch {}
+    } elseif (-not $exists) {
+        Log "DEBUG" "MX(@) compare for domain $($Zone): existing='(missing record set)' desired='$($DnsMxTarget)'/$($MxPreference)"
     }
     if (-not $exists -or $ForceMx -or -not $mxMatch) {
         if ($exists -and $ForceMx) {
-            Log "INFO" "  Overwriting MX(@) -> $DnsMxTarget (pref $MxPreference)"
+            Log "INFO" "Overwriting MX(@) for domain $($Zone) -> $DnsMxTarget (pref $MxPreference)"
             az network dns record-set mx delete -g $Rg -z $Zone -n "@" --yes 2>$null | Out-Null
         } elseif (-not $exists) {
-            Log "INFO" "  Creating MX(@) -> $DnsMxTarget (pref $MxPreference)"
+            Log "INFO" "Creating MX(@) for domain $($Zone) -> $DnsMxTarget (pref $MxPreference)"
         } else {
-            Log "INFO" "  Updating MX(@): existing does not match target."
+            Log "INFO" "Updating MX(@) for domain $($Zone): existing does not match target."
         }
         az network dns record-set mx create -g $Rg -z $Zone -n "@" --ttl $Ttl | Out-Null
         az network dns record-set mx add-record -g $Rg -z $Zone -n "@" --exchange $DnsMxTarget --preference $MxPreference | Out-Null
         Az-AssertOk "Failed ensuring MX(@) for zone '$Zone'"
         return $true
     }
-    Log "INFO" "  MX(@) already $DnsMxTarget (pref $MxPreference); skipping."
+    Log "INFO" "MX(@) for domain $($Zone) already $DnsMxTarget (pref $MxPreference); skipping."
     return $false
 }
 
 function Ensure-CNAMEWildcard([string]$Zone, [string]$Rg) {
-    $exists = RecordSet-Exists -Zone $Zone -Name "*" -Type "cname" -Rg $Rg
+    $record = Get-CnameWildcardRecord -Zone $Zone -Rg $Rg
+    $exists = $null -ne $record
     $cnameMatch = $false
     if ($exists -and -not $ForceCname) {
-        $json = az network dns record-set cname show -g $Rg -z $Zone -n "*" -o json 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($json)) {
-            try {
-                $obj = $json | ConvertFrom-Json
-                $existingCname = $obj.cname.ToString().Trim()
-                $targetCname = $DnsCnameTarget.ToString().Trim()
-                if ($existingCname -eq $targetCname) {
+        try {
+            $existingCnameRaw = $null
+            if ($record.cname) {
+                $existingCnameRaw = $record.cname
+            } elseif ($record.cnameRecord -and $record.cnameRecord.cname) {
+                $existingCnameRaw = $record.cnameRecord.cname
+            } elseif ($record.cnameRecords -and $record.cnameRecords.Count -gt 0 -and $record.cnameRecords[0].cname) {
+                $existingCnameRaw = $record.cnameRecords[0].cname
+            }
+
+            $targetCname = $DnsCnameTarget.ToString().Trim()
+            if (-not [string]::IsNullOrWhiteSpace($existingCnameRaw)) {
+                $existingCname = $existingCnameRaw.ToString().Trim()
+                $existingNorm = $existingCname.TrimEnd('.').ToLowerInvariant()
+                $targetNorm = $targetCname.TrimEnd('.').ToLowerInvariant()
+                Log "DEBUG" "CNAME(*) compare for domain $($Zone): existing='$existingCname' desired='$targetCname'"
+                if ($existingNorm -eq $targetNorm) {
                     $cnameMatch = $true
                 }
-                Log "DEBUG" "CNAME(*) compare: existing='$existingCname' desired='$targetCname'"
-            } catch {}
-        }
+            } else {
+                Log "DEBUG" "CNAME(*) compare for domain $($Zone): existing='(none)' desired='$targetCname'"
+            }
+        } catch {}
+    } elseif (-not $exists) {
+        Log "DEBUG" "CNAME(*) compare for domain $($Zone): existing='(missing record set)' desired='$($DnsCnameTarget)'"
     }
     if (-not $exists -or $ForceCname -or -not $cnameMatch) {
         if ($exists -and $ForceCname) {
-            Log "INFO" "  Overwriting CNAME(*) for $Zone -> $DnsCnameTarget"
+            Log "INFO" "Overwriting CNAME(*) for domain $($Zone) -> $DnsCnameTarget"
             az network dns record-set cname delete -g $Rg -z $Zone -n "*" --yes 2>$null | Out-Null
         } elseif (-not $exists) {
-            Log "INFO" "  Creating CNAME(*) for $Zone -> $DnsCnameTarget"
+            Log "INFO" "Creating CNAME(*) for domain $($Zone) -> $DnsCnameTarget"
         } else {
-            Log "INFO" "  Updating CNAME(*) for $($Zone): existing does not match target."
+            Log "INFO" "Updating CNAME(*) for domain $($Zone): existing does not match target."
         }
         az network dns record-set cname create -g $Rg -z $Zone -n "*" --ttl $Ttl | Out-Null
         az network dns record-set cname set-record -g $Rg -z $Zone -n "*" --cname $DnsCnameTarget | Out-Null
         Az-AssertOk "Failed ensuring CNAME(*) for zone '$Zone'"
         return $true
     }
-    Log "INFO" "  CNAME(*) for $Zone already $DnsCnameTarget; skipping."
+    Log "INFO" "CNAME(*) for domain $($Zone) already $DnsCnameTarget; skipping."
     return $false
 }
 
@@ -343,13 +398,12 @@ function Process-Once {
     foreach ($zone in $zones) {
         $zoneLower = $zone.ToLowerInvariant()
         if ($BlacklistZones -contains $zoneLower) {
-            Log "INFO" "Skipping blacklisted zone: $zone"
+            Log "INFO" "Skipping blacklisted zone: $($zone)"
             continue
         }
-        Log "INFO" "=== Zone: $zone ==="
         try {
             if ($canFastPath) {
-                Log "INFO" "  Updating A(@) -> $desiredIp"
+                Log "INFO" "Updating A(@) for domain $($zone) -> $desiredIp"
                 Replace-ZoneRootA -Zone $zone -DesiredIp $desiredIp -Rg $ResourceGroup -TtlX $Ttl
                 $aUpdated++
             } else {
@@ -361,21 +415,21 @@ function Process-Once {
                 if ($existing.Count -ne 1) {
                     $needsUpdate = $true
                 } elseif ($existingIp -ne $desiredIpTrim) {
-                    Log "DEBUG" "A(@) compare: existing='$existingIp' desired='$desiredIpTrim'"
+                    Log "DEBUG" "A(@) compare for domain $($zone): existing='$existingIp' desired='$desiredIpTrim'"
                     $needsUpdate = $true
                 }
                 if ($needsUpdate) {
                     $existingStr = if ($existing.Count -gt 0) { ($existing -join ", ") } else { "(none)" }
-                    Log "INFO" "  Updating A(@): $existingStr -> $desiredIp"
+                    Log "INFO" "Updating A(@) for domain $($zone): $existingStr -> $desiredIp"
                     Replace-ZoneRootA -Zone $zone -DesiredIp $desiredIp -Rg $ResourceGroup -TtlX $Ttl
                     $aUpdated++
                 } else {
-                    Log "INFO" "  A(@) already $desiredIp; skipping."
+                    Log "INFO" "A(@) for domain $($zone) already $desiredIp; skipping."
                 }
             }
         } catch {
             $failed++
-            Log "ERROR" "Zone failed (A): $zone :: $($_.Exception.Message)"
+            Log "ERROR" "Zone failed (A): $($zone) :: $($_.Exception.Message)"
         }
     }
 
@@ -383,12 +437,11 @@ function Process-Once {
     foreach ($zone in $zones) {
         $zoneLower = $zone.ToLowerInvariant()
         if ($BlacklistZones -contains $zoneLower) { continue }
-        Log "INFO" "=== Zone: $zone ==="
         try {
             if (Ensure-CNAMEWildcard -Zone $zone -Rg $ResourceGroup) { $cnameChanged++ }
         } catch {
             $failed++
-            Log "ERROR" "Zone failed (CNAME): $zone :: $($_.Exception.Message)"
+            Log "ERROR" "Zone failed (CNAME): $($zone) :: $($_.Exception.Message)"
         }
     }
 
@@ -396,12 +449,11 @@ function Process-Once {
     foreach ($zone in $zones) {
         $zoneLower = $zone.ToLowerInvariant()
         if ($BlacklistZones -contains $zoneLower) { continue }
-        Log "INFO" "=== Zone: $zone ==="
         try {
             if (Ensure-MX -Zone $zone -Rg $ResourceGroup) { $mxChanged++ }
         } catch {
             $failed++
-            Log "ERROR" "Zone failed (MX): $zone :: $($_.Exception.Message)"
+            Log "ERROR" "Zone failed (MX): $($zone) :: $($_.Exception.Message)"
         }
     }
 
