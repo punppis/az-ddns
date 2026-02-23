@@ -1,0 +1,40 @@
+services:
+  dns-updater:
+    build: .
+    environment:
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
+      AZURE_SUBSCRIPTION_ID: ${AZURE_SUBSCRIPTION_ID}
+
+      # Use one of:
+      # AZURE_CLIENT_SECRET_FILE: /run/secrets/azure_client_secret
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
+
+      AZURE_RESOURCE_GROUP: ${AZURE_RESOURCE_GROUP}
+
+      DNS_MX_TARGET: ${DNS_MX_TARGET}
+      DNS_CNAME_TARGET: ${DNS_CNAME_TARGET}
+
+      # Optional: static A target (otherwise dynamic)
+      # DNS_A_TARGET: "85.29.89.130"
+
+      # Optional behavior
+      # RUN_ONCE: "true"
+      # INTERVAL_SECONDS: "300"
+      # TTL: "3600"
+      # MX_PREFERENCE: "10"
+      # FORCE_MX: "true"
+      # FORCE_CNAME: "true"
+      # BLACKLIST_ZONES: "example.com,skip.net"
+      # IP_SERVICES: "https://api.ipify.org?format=text,https://checkip.amazonaws.com"
+
+      # Optional: enable state file (recommended). If you don't mount it, just omit IP_STATE_FILE.
+      IP_STATE_FILE: ${IP_STATE_FILE:-/state/last_ip.txt}
+    volumes:
+      - ./state:/state
+#     secrets:
+#       - azure_client_secret
+
+# secrets:
+#   azure_client_secret:
+#     file: ./secrets/azure_client_secret.txt
