@@ -28,11 +28,13 @@ What it does (all steps are idempotent — safe to re-run):
       Functions endpoint) if one is not already in .env.
   9.  Selects or creates an Azure Cache for Redis instance (optional;
       used for distributed concurrency locking).
-  10. Writes / merges all values into .env (never overwrites
+  10. Lists Azure DNS zones and lets you select which domains/hostnames
+      to manage; writes dns.json (merges if it already exists).
+  11. Writes / merges all values into .env (never overwrites
       values you have already set).
-  11. If az-functions/AzDdns/ exists, also writes
+  12. If az-functions/AzDdns/ exists, also writes
       az-functions/AzDdns/local.settings.json for local dev.
-  12. Prints a status report.
+  13. Prints a status report.
 
 Usage:
     python3 init.py                   # normal interactive run
@@ -58,6 +60,7 @@ from typing import Optional
 
 REPO_ROOT = Path(__file__).parent.resolve()
 ENV_FILE = REPO_ROOT / ".env"
+DNS_JSON_FILE = REPO_ROOT / "dns.json"
 FUNCTIONS_SETTINGS = REPO_ROOT / "az-functions" / "AzDdns" / "local.settings.json"
 
 DNS_ZONE_CONTRIBUTOR_ROLE = "DNS Zone Contributor"
@@ -526,8 +529,42 @@ def write_local_settings(path: Path, values: dict[str, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main flow
+# DNS zone helpers
 # ---------------------------------------------------------------------------
+
+def list_dns_zones() -> list[dict]:
+    """Return all Azure DNS zones visible with the current credentials."""
+    result = _az_json("network", "dns", "zone", "list", "--output", "json", check=False)
+    return result if isinstance(result, list) else []
+
+
+def write_dns_json(path: Path, domains: list[str]) -> None:
+    """
+    Write (or merge into) a dns.json file.
+
+    Each entry in *domains* gets a default A record ``@ -> {{IP}}``.
+    Existing entries are preserved; only missing domain keys are added.
+    """
+    config: dict = {"lastUpdate": "", "domains": {}, "state": {}}
+    if path.exists():
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+
+    config.setdefault("domains", {})
+    config.setdefault("state", {})
+
+    added = []
+    for domain in domains:
+        if domain not in config["domains"]:
+            config["domains"][domain] = {"A": {"@": "{{IP}}"}}
+            added.append(domain)
+
+    path.write_text(json.dumps(config, indent=4), encoding="utf-8")
+    return added
+
+
 
 def select_subscription(subscriptions: list[dict]) -> dict:
     if not subscriptions:
@@ -572,7 +609,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 1. az CLI check
     # ------------------------------------------------------------------
-    step("1/10  Check az CLI")
+    step("1/11  Check az CLI")
     if not check_az_installed():
         if not install_az_cli():
             sys.exit(1)
@@ -581,7 +618,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 2. Login check
     # ------------------------------------------------------------------
-    step("2/10  Azure login")
+    step("2/11  Azure login")
     if check_logged_in():
         account = get_current_account()
         ok(f"Already logged in as {account.get('user', {}).get('name', '?')} "
@@ -597,7 +634,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 3. Subscription selection
     # ------------------------------------------------------------------
-    step("3/10  Select subscription")
+    step("3/11  Select subscription")
     subscriptions = get_subscriptions()
     chosen_sub = select_subscription(subscriptions)
     set_subscription(chosen_sub["id"])
@@ -613,7 +650,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 4. Resource group
     # ------------------------------------------------------------------
-    step("4/10  Resource group")
+    step("4/11  Resource group")
     resource_group_name: str = existing_env.get("AZURE_RESOURCE_GROUP", "")
     location: str = existing_env.get("AZURE_LOCATION", "")
 
@@ -671,7 +708,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 5. Function App
     # ------------------------------------------------------------------
-    step("5/10  Azure Function App")
+    step("5/11  Azure Function App")
     function_app_name: str = existing_env.get("FUNCTION_APP_NAME", "")
 
     if function_app_name:
@@ -750,7 +787,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 6. Service principal
     # ------------------------------------------------------------------
-    step("6/10  Service principal")
+    step("6/11  Service principal")
     sp_client_secret: str = ""
     sp_client_id: str = ""
 
@@ -791,7 +828,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 7. Role assignment check
     # ------------------------------------------------------------------
-    step("7/10  RBAC -- DNS Zone Contributor")
+    step("7/11  RBAC -- DNS Zone Contributor")
     sp_object_id = get_sp_object_id(sp_client_id)
     if sp_object_id:
         assignments = get_role_assignments(sp_object_id, subscription_id)
@@ -810,7 +847,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 8. DDNS token
     # ------------------------------------------------------------------
-    step("8/10  DDNS token")
+    step("8/11  DDNS token")
     ddns_token = existing_env.get("DDNS_TOKEN", "")
     if ddns_token:
         ok("DDNS_TOKEN already set in .env -- keeping existing value.")
@@ -821,7 +858,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 9. Redis (optional -- for distributed concurrency lock)
     # ------------------------------------------------------------------
-    step("9/10  Redis (optional -- for distributed concurrency lock)")
+    step("9/11  Redis (optional -- for distributed concurrency lock)")
     redis_conn_str = existing_env.get("REDIS_CONNECTION_STRING", "")
 
     if redis_conn_str:
@@ -909,9 +946,85 @@ def run(args: argparse.Namespace) -> None:
             warn("Invalid selection -- enter a number.")
 
     # ------------------------------------------------------------------
-    # 10. Write .env and local.settings.json
+    # 10. DNS zones → dns.json
     # ------------------------------------------------------------------
-    step("10/10  Write configuration files")
+    step("10/11  DNS zones (dns.json)")
+
+    info("Fetching Azure DNS zones visible to the service principal...")
+    all_zones = list_dns_zones()
+
+    selected_domains: list[str] = []
+
+    if DNS_JSON_FILE.exists():
+        ok(f"dns.json already exists at {DNS_JSON_FILE} — will merge any new entries.")
+        try:
+            existing_cfg = json.loads(DNS_JSON_FILE.read_text(encoding="utf-8"))
+            for d in existing_cfg.get("domains", {}):
+                ok(f"  Already configured: {d}")
+        except json.JSONDecodeError:
+            pass
+
+    if all_zones:
+        print()
+        print("      Azure DNS zones found in your subscription:")
+        for i, zone in enumerate(all_zones, 1):
+            rg = zone.get("resourceGroup", "?")
+            print(f"        {i:>3}. {zone['name']:<45} [rg={rg}]")
+        print()
+        info("Enter zone numbers (comma-separated) to add to dns.json,")
+        info("or type a custom hostname (e.g. home.example.com), or 0 to skip.")
+        print()
+    else:
+        warn("No Azure DNS zones found (SP may not have DNS Zone Contributor yet).")
+        info("You can still enter domain names manually.")
+        print()
+
+    while True:
+        raw = prompt(
+            "Zone numbers, hostname(s), or 0 to skip",
+            default="0",
+        ).strip()
+
+        if raw == "0":
+            info("Skipping dns.json domain selection — edit dns.json manually later.")
+            break
+
+        # Collect entries: numbers → zone names, anything else → literal hostname
+        entries: list[str] = []
+        for token in re.split(r"[,\s]+", raw):
+            token = token.strip().strip(".")
+            if not token:
+                continue
+            if re.match(r"^\d+$", token):
+                idx = int(token) - 1
+                if all_zones and 0 <= idx < len(all_zones):
+                    entries.append(all_zones[idx]["name"])
+                else:
+                    warn(f"  No zone at index {token} — skipping.")
+            else:
+                # Treat as a literal hostname
+                entries.append(token)
+
+        if not entries:
+            warn("No valid entries — try again or enter 0 to skip.")
+            continue
+
+        selected_domains = entries
+        break
+
+    if selected_domains:
+        added = write_dns_json(DNS_JSON_FILE, selected_domains)
+        if added:
+            ok(f"dns.json written to {DNS_JSON_FILE}")
+            for d in added:
+                ok(f"  Added: {d}  (A record @ → {{{{IP}}}})")
+        else:
+            ok("dns.json already contains all selected domains — nothing new added.")
+
+    # ------------------------------------------------------------------
+    # 11. Write .env and local.settings.json
+    # ------------------------------------------------------------------
+    step("11/11  Write configuration files")
 
     env_values: dict[str, str] = {
         "AZURE_TENANT_ID":       tenant_id,
