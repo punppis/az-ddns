@@ -1,9 +1,11 @@
 services:
   dns-updater:
+    restart: unless-stopped
     build:
       context: ./src
       dockerfile: Dockerfile
     environment:
+      INTERVAL_SECONDS: ${INTERVAL_SECONDS}
       PRIORITY_DOMAIN: ${PRIORITY_DOMAIN}
       AZURE_TENANT_ID: ${AZURE_TENANT_ID}
       AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
