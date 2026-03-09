@@ -115,27 +115,29 @@ def get_public_ip(services: Optional[List[str]] = None) -> str:
     raise RuntimeError("All public IP lookup services failed")
 
 
+def parse_quoted_env_value(raw: str) -> Tuple[str, str, bool]:
+    """Parse a quoted .env value and return (value, remainder, closed)."""
+    quote = raw[0]
+    escaped = False
+    parsed: List[str] = []
+    for index, char in enumerate(raw[1:], start=1):
+        if escaped:
+            parsed.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == quote:
+            return "".join(parsed), raw[index + 1:], True
+        parsed.append(char)
+    return raw, "", False
+
+
 def load_dotenv(path: str) -> None:
     """Load environment variables from a .env file without overwriting."""
     if not os.path.isfile(path):
         return
-
-    def parse_quoted_value(raw: str) -> Tuple[str, str, bool]:
-        quote = raw[0]
-        escaped = False
-        parsed: List[str] = []
-        for index, char in enumerate(raw[1:], start=1):
-            if escaped:
-                parsed.append(char)
-                escaped = False
-                continue
-            if char == "\\":
-                escaped = True
-                continue
-            if char == quote:
-                return "".join(parsed), raw[index + 1:], True
-            parsed.append(char)
-        return raw, "", False
 
     loaded = 0
     with open(path, encoding="utf-8") as fh:
@@ -153,13 +155,13 @@ def load_dotenv(path: str) -> None:
                 continue
             value = value.strip()
             if value and value[0] in ("'", '"'):
-                parsed_value, remainder, closed = parse_quoted_value(value)
+                parsed_value, remainder, closed = parse_quoted_env_value(value)
                 if closed:
                     remainder = remainder.strip()
                     if not remainder or remainder.startswith("#"):
                         value = parsed_value
             else:
-                value = re.split(r"\s*#", value, 1)[0].rstrip()
+                value = re.split(r"\s+#", value, 1)[0].rstrip()
             os.environ[key] = value
             loaded += 1
 
