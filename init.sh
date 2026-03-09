@@ -6,11 +6,9 @@
 # hands off to init.py for interactive Azure resource provisioning.
 #
 # Tools installed (only if missing):
-#   • Python 3
+#   • Python 3 + pip
 #   • Azure CLI
 #   • Docker
-#   • Node.js + npm
-#   • Azure Functions Core Tools v4  (via npm)
 #   • .NET 10 SDK
 #
 # Usage:
@@ -21,6 +19,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_FILE="${TMPDIR:-/tmp}/az-ddns-install.log"
+: > "$LOG_FILE"   # truncate / create
 
 # ---------------------------------------------------------------------------
 # Colour helpers
@@ -45,7 +45,8 @@ step()  { echo -e "\n${_STEP_ON}[$*]${_RESET}"; }
 ok()    { echo -e "${_OK}$*"; }
 info()  { echo -e "${_INFO}$*"; }
 warn()  { echo -e "${_WARN}$*"; }
-die()   { echo -e "${_ERR}$*" >&2; exit 1; }
+err()   { echo -e "${_ERR}$*" >&2; }
+die()   { err "$*"; exit 1; }
 
 confirm() {
   # confirm "message" [default: y|n]  → returns 0 (yes) or 1 (no)
@@ -57,6 +58,24 @@ confirm() {
   read -r ans || ans=""
   ans="${ans:-$default}"
   [[ "$ans" =~ ^[Yy] ]]
+}
+
+# ---------------------------------------------------------------------------
+# Quiet installer — runs a command silently, reports only pass/fail
+# ---------------------------------------------------------------------------
+install_quietly() {
+  # Usage: install_quietly "description" cmd [args...]
+  # For pipelines / multi-command blocks:
+  #   install_quietly "desc" bash -c "cmd1 && cmd2 | cmd3"
+  local desc="$1"; shift
+  info "Installing $desc..."
+  if "$@" >>"$LOG_FILE" 2>&1; then
+    ok "$desc installed successfully."
+  else
+    err "$desc installation failed."
+    warn "See $LOG_FILE for details."
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -84,25 +103,13 @@ fi
 # ---------------------------------------------------------------------------
 ensure_brew() {
   if ! command -v brew &>/dev/null; then
-    info "Installing Homebrew…"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    install_quietly "Homebrew" bash -c \
+      '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
     # Add brew to PATH for Apple Silicon
     if [ -f /opt/homebrew/bin/brew ]; then
       eval "$(/opt/homebrew/bin/brew shellenv)"
     fi
   fi
-}
-
-# ---------------------------------------------------------------------------
-# Generic package-manager install (Linux)
-# ---------------------------------------------------------------------------
-pkg_install() {
-  case "$PKG_MGR" in
-    apt) sudo apt-get install -y "$@" ;;
-    dnf) sudo dnf install -y "$@" ;;
-    yum) sudo yum install -y "$@" ;;
-    *  ) die "No supported package manager found. Install $* manually." ;;
-  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -113,11 +120,12 @@ echo -e "${_STEP_ON}║    az-ddns  dependency bootstrap     ║${_RESET}"
 echo -e "${_STEP_ON}╚══════════════════════════════════════╝${_RESET}"
 echo "  Platform: $OS${PKG_MGR:+  (package manager: $PKG_MGR)}"
 echo "  Each tool is checked first; install is skipped if already present."
+echo "  Installer output is logged to $LOG_FILE"
 
 # =============================================================================
-# 1.  Python 3
+# 1.  Python 3 + pip
 # =============================================================================
-step "1/6  Python 3"
+step "1/4  Python 3 + pip"
 
 PYTHON=""
 
@@ -137,56 +145,75 @@ else
   if confirm "Install Python 3 now?"; then
     if [ "$OS" = "macos" ]; then
       ensure_brew
-      brew install python3
+      install_quietly "Python 3" brew install python3
     elif [ "$PKG_MGR" = "apt" ]; then
-      sudo apt-get update
-      sudo apt-get install -y python3 python3-pip
+      install_quietly "Python 3" bash -c "sudo apt-get update && sudo apt-get install -y python3 python3-pip"
     elif [ "$PKG_MGR" = "dnf" ]; then
-      sudo dnf install -y python3 python3-pip
+      install_quietly "Python 3" sudo dnf install -y python3 python3-pip
     elif [ "$PKG_MGR" = "yum" ]; then
-      sudo yum install -y python3 python3-pip
+      install_quietly "Python 3" sudo yum install -y python3 python3-pip
     else
       die "Please install Python 3 manually: https://www.python.org/downloads/"
     fi
     PYTHON="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
     [ -n "$PYTHON" ] || die "Python 3 still not found after install. Please check your PATH."
-    ok "Python installed: $PYTHON"
   else
     die "Python 3 is required. Install it from https://www.python.org/downloads/"
+  fi
+fi
+
+# Check pip (may already be present via python3-pip installed above)
+if "$PYTHON" -m pip --version &>/dev/null 2>&1; then
+  ok "pip available ($PYTHON -m pip)"
+else
+  warn "pip not found."
+  if confirm "Install pip now?"; then
+    if [ "$OS" = "macos" ]; then
+      install_quietly "pip" bash -c "curl -fsSL https://bootstrap.pypa.io/get-pip.py | $PYTHON"
+    elif [ "$PKG_MGR" = "apt" ]; then
+      install_quietly "pip" sudo apt-get install -y python3-pip
+    elif [ "$PKG_MGR" = "dnf" ]; then
+      install_quietly "pip" sudo dnf install -y python3-pip
+    elif [ "$PKG_MGR" = "yum" ]; then
+      install_quietly "pip" sudo yum install -y python3-pip
+    else
+      install_quietly "pip" bash -c "curl -fsSL https://bootstrap.pypa.io/get-pip.py | $PYTHON"
+    fi
+  else
+    warn "Skipping pip."
   fi
 fi
 
 # =============================================================================
 # 2.  Azure CLI
 # =============================================================================
-step "2/6  Azure CLI"
+step "2/4  Azure CLI"
 
 if command -v az &>/dev/null; then
   ok "Azure CLI already installed."
 else
   warn "Azure CLI not found."
-  info "Install command will be shown before running."
   if confirm "Install Azure CLI now?"; then
     if [ "$OS" = "macos" ]; then
       ensure_brew
-      brew install azure-cli
+      install_quietly "Azure CLI" brew install azure-cli
     elif [ "$PKG_MGR" = "apt" ]; then
-      info "Running: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
-      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      install_quietly "Azure CLI" bash -c "curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
     elif [ "$PKG_MGR" = "dnf" ]; then
-      sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
-      printf "[azure-cli]\nname=Azure CLI\nbaseurl=https://packages.microsoft.com/yumrepos/azure-cli\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc\n" \
-        | sudo tee /etc/yum.repos.d/azure-cli.repo > /dev/null
-      sudo dnf install -y azure-cli
+      install_quietly "Azure CLI" bash -c "
+        sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+        printf '[azure-cli]\nname=Azure CLI\nbaseurl=https://packages.microsoft.com/yumrepos/azure-cli\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc\n' \
+          | sudo tee /etc/yum.repos.d/azure-cli.repo > /dev/null
+        sudo dnf install -y azure-cli"
     elif [ "$PKG_MGR" = "yum" ]; then
-      sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
-      printf "[azure-cli]\nname=Azure CLI\nbaseurl=https://packages.microsoft.com/yumrepos/azure-cli\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc\n" \
-        | sudo tee /etc/yum.repos.d/azure-cli.repo > /dev/null
-      sudo yum install -y azure-cli
+      install_quietly "Azure CLI" bash -c "
+        sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+        printf '[azure-cli]\nname=Azure CLI\nbaseurl=https://packages.microsoft.com/yumrepos/azure-cli\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc\n' \
+          | sudo tee /etc/yum.repos.d/azure-cli.repo > /dev/null
+        sudo yum install -y azure-cli"
     else
       die "Please install Azure CLI manually: https://aka.ms/installazurecli"
     fi
-    ok "Azure CLI installed."
   else
     warn "Skipping Azure CLI — init.py will prompt again if needed."
   fi
@@ -195,7 +222,7 @@ fi
 # =============================================================================
 # 3.  Docker
 # =============================================================================
-step "3/6  Docker"
+step "3/4  Docker"
 
 if command -v docker &>/dev/null && docker --version &>/dev/null 2>&1; then
   ok "$(docker --version)"
@@ -204,23 +231,18 @@ else
   if confirm "Install Docker now?"; then
     if [ "$OS" = "macos" ]; then
       ensure_brew
-      brew install --cask docker
-      ok "Docker Desktop installed. Start it from the Applications folder before using 'docker compose'."
+      install_quietly "Docker Desktop" brew install --cask docker
+      ok "Start Docker Desktop from the Applications folder before using 'docker compose'."
     elif [ "$PKG_MGR" = "apt" ]; then
-      info "Running official Docker install script: https://get.docker.com"
-      curl -fsSL https://get.docker.com | sudo sh
+      install_quietly "Docker" bash -c "curl -fsSL https://get.docker.com | sudo sh"
       sudo usermod -aG docker "$USER" 2>/dev/null || true
-      ok "Docker installed. Log out and back in (or run 'newgrp docker') to use without sudo."
+      ok "Log out and back in (or run 'newgrp docker') to use Docker without sudo."
     elif [ "$PKG_MGR" = "dnf" ]; then
-      sudo dnf install -y docker
-      sudo systemctl enable --now docker
+      install_quietly "Docker" bash -c "sudo dnf install -y docker && sudo systemctl enable --now docker"
       sudo usermod -aG docker "$USER" 2>/dev/null || true
-      ok "Docker installed and started."
     elif [ "$PKG_MGR" = "yum" ]; then
-      sudo yum install -y docker
-      sudo systemctl enable --now docker
+      install_quietly "Docker" bash -c "sudo yum install -y docker && sudo systemctl enable --now docker"
       sudo usermod -aG docker "$USER" 2>/dev/null || true
-      ok "Docker installed and started."
     else
       die "Please install Docker manually: https://docs.docker.com/get-docker/"
     fi
@@ -230,61 +252,9 @@ else
 fi
 
 # =============================================================================
-# 4.  Node.js + npm
+# 4.  .NET 10 SDK
 # =============================================================================
-step "4/6  Node.js + npm"
-
-if command -v node &>/dev/null && command -v npm &>/dev/null; then
-  ok "Node $(node --version) / npm $(npm --version)"
-else
-  warn "Node.js not found."
-  if confirm "Install Node.js LTS now?"; then
-    if [ "$OS" = "macos" ]; then
-      ensure_brew
-      brew install node
-    elif [ "$PKG_MGR" = "apt" ]; then
-      info "Adding NodeSource LTS repository…"
-      curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-      sudo apt-get install -y nodejs
-    elif [ "$PKG_MGR" = "dnf" ]; then
-      sudo dnf install -y nodejs npm
-    elif [ "$PKG_MGR" = "yum" ]; then
-      sudo yum install -y nodejs npm
-    else
-      die "Please install Node.js manually: https://nodejs.org/en/download/"
-    fi
-    ok "Node.js installed."
-  else
-    warn "Skipping Node.js — needed for Azure Functions Core Tools."
-  fi
-fi
-
-# =============================================================================
-# 5.  Azure Functions Core Tools v4
-# =============================================================================
-step "5/6  Azure Functions Core Tools v4"
-
-if command -v func &>/dev/null; then
-  ok "Azure Functions Core Tools $(func --version 2>/dev/null || echo '(version unknown)')"
-else
-  warn "Azure Functions Core Tools not found."
-  if command -v npm &>/dev/null; then
-    if confirm "Install Azure Functions Core Tools v4 via npm now?"; then
-      sudo npm install -g azure-functions-core-tools@4 --unsafe-perm true
-      ok "Azure Functions Core Tools v4 installed."
-    else
-      warn "Skipping — needed for local testing with run.py."
-    fi
-  else
-    warn "npm not found — skipping Azure Functions Core Tools."
-    info "Install Node.js first, then:  npm install -g azure-functions-core-tools@4"
-  fi
-fi
-
-# =============================================================================
-# 6.  .NET 8 SDK
-# =============================================================================
-step "6/6  .NET 10 SDK"
+step "4/4  .NET 10 SDK"
 
 if command -v dotnet &>/dev/null; then
   ok ".NET $(dotnet --version 2>/dev/null || echo '(version unknown)')"
@@ -293,15 +263,13 @@ else
   if confirm "Install .NET 10 SDK now?"; then
     if [ "$OS" = "macos" ]; then
       ensure_brew
-      brew install --cask dotnet-sdk
+      install_quietly ".NET 10 SDK" brew install --cask dotnet-sdk
     else
-      # Use the official Microsoft install script — works on all Linux distros
-      info "Running official .NET install script from https://dot.net/v1/dotnet-install.sh"
-      curl -fsSL https://dot.net/v1/dotnet-install.sh \
-        | sudo bash -s -- --channel 10.0 --install-dir /usr/local/share/dotnet
-      sudo ln -sf /usr/local/share/dotnet/dotnet /usr/local/bin/dotnet 2>/dev/null || true
+      install_quietly ".NET 10 SDK" bash -c "
+        curl -fsSL https://dot.net/v1/dotnet-install.sh \
+          | sudo bash -s -- --channel 10.0 --install-dir /usr/local/share/dotnet
+        sudo ln -sf /usr/local/share/dotnet/dotnet /usr/local/bin/dotnet 2>/dev/null || true"
     fi
-    ok ".NET SDK installed."
   else
     warn "Skipping .NET SDK — needed to build/run Azure Functions locally."
   fi
