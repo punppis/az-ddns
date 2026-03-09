@@ -538,7 +538,7 @@ def list_dns_zones() -> list[dict]:
     return result if isinstance(result, list) else []
 
 
-def write_dns_json(path: Path, domains: list[str]) -> None:
+def write_dns_json(path: Path, domains: list[str]) -> list[str]:
     """
     Write (or merge into) a dns.json file.
 
@@ -1099,14 +1099,17 @@ def run(args: argparse.Namespace) -> None:
     print(f"  Client secret   : {'<set>' if sp_client_secret else '<NOT SET -- edit .env>'}")
     print(f"  DDNS token      : {ddns_token[:8]}...  (stored in .env)")
     print(f"  Redis           : {'<configured>' if redis_conn_str else '<not configured -- in-process lock>'}")
+    print(f"  dns.json        : {DNS_JSON_FILE if DNS_JSON_FILE.exists() else '<not created -- re-run init.py>'}")
     print()
     print("  Next steps:")
-    print("    * Python updater  :  python3 src/az-ddns --config dns.json --once")
-    print("    * Docker Compose  :  docker compose up --build")
+    if not DNS_JSON_FILE.exists():
+        print("    * Re-run init.py to select DNS zones and generate dns.json")
     if function_app_name:
-        print(f"    * Deploy to Azure :  cd az-functions && func azure functionapp publish {function_app_name}")
-    elif FUNCTIONS_SETTINGS.parent.exists():
-        print("    * Azure Functions :  cd az-functions/AzDdns && func start")
+        print(f"    * Deploy to Azure :  cd az-functions/AzDdns && func azure functionapp publish {function_app_name}")
+    else:
+        print("    * Test locally    :  python3 run.py")
+        if FUNCTIONS_SETTINGS.parent.exists():
+            print("    * Start locally   :  cd az-functions/AzDdns && func start")
     print()
     if not sp_client_secret:
         warn("AZURE_CLIENT_SECRET is not set in .env.")
