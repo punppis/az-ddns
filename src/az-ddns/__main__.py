@@ -116,7 +116,14 @@ def get_public_ip(services: Optional[List[str]] = None) -> str:
 
 
 def parse_quoted_env_value(raw: str) -> Tuple[str, str, bool]:
-    """Parse a quoted .env value and return (value, remainder, closed)."""
+    """
+    Parse a quoted .env value.
+
+    Returns a tuple of (value, remainder, closed) where:
+    - value: the parsed value inside the quotes
+    - remainder: any trailing text after the closing quote
+    - closed: whether a closing quote was found
+    """
     quote = raw[0]
     escaped = False
     parsed: List[str] = []
@@ -160,8 +167,12 @@ def load_dotenv(path: str) -> None:
                     remainder = remainder.strip()
                     if not remainder or remainder.startswith("#"):
                         value = parsed_value
+                else:
+                    log.warning(
+                        "Unclosed quote in .env value for %s (%s)", key, path
+                    )
             else:
-                value = re.split(r"\s+#", value, 1)[0].rstrip()
+                value = re.split(r"\s*#", value, 1)[0].rstrip()
             os.environ[key] = value
             loaded += 1
 
