@@ -1,2 +1,5 @@
 .env
 state/
+__pycache__/
+*.pyc
+*.pyo
