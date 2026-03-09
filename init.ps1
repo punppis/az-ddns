@@ -11,7 +11,7 @@
 #   • Docker Desktop
 #   • Node.js + npm
 #   • Azure Functions Core Tools v4  (via npm)
-#   • .NET 8 SDK
+#   • .NET 10 SDK
 #
 # Requires winget (ships with Windows 10/11 via App Installer).
 # Install App Installer from the Microsoft Store if winget is missing:
@@ -183,16 +183,16 @@ if (Command-Exists 'func') {
 # =============================================================================
 # 6.  .NET 8 SDK
 # =============================================================================
-Step "6/6  .NET 8 SDK"
+Step "6/6  .NET 10 SDK"
 
 if (Command-Exists 'dotnet') {
     Ok ".NET $(dotnet --version 2>$null)"
 } else {
     Warn ".NET SDK not found."
-    if (Confirm-Install '.NET 8 SDK') {
-        Winget-Install 'Microsoft.DotNet.SDK.8'
+    if (Confirm-Install '.NET 10 SDK') {
+        Winget-Install 'Microsoft.DotNet.SDK.10'
         Refresh-Path
-        Ok ".NET 8 SDK installed."
+        Ok ".NET 10 SDK installed."
     } else {
         Warn "Skipping .NET SDK — needed to build/run Azure Functions locally."
     }

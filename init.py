@@ -460,7 +460,7 @@ def create_function_app(name: str, resource_group: str, storage_account: str,
                         location: str) -> dict:
     """
     Create an Azure Function App on a Consumption (Y1) plan — cheapest option,
-    no idle costs.  Uses dotnet-isolated runtime v8 with Functions v4.
+    no idle costs.  Uses dotnet-isolated runtime v10 with Functions v4.
     """
     result = _az_json(
         "functionapp", "create",
@@ -469,7 +469,7 @@ def create_function_app(name: str, resource_group: str, storage_account: str,
         "--storage-account", storage_account,
         "--consumption-plan-location", location,
         "--runtime", "dotnet-isolated",
-        "--runtime-version", "8",
+        "--runtime-version", "10",
         "--functions-version", "4",
         "--os-type", "Windows",
     )

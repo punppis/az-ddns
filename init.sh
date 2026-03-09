@@ -11,7 +11,7 @@
 #   • Docker
 #   • Node.js + npm
 #   • Azure Functions Core Tools v4  (via npm)
-#   • .NET 8 SDK
+#   • .NET 10 SDK
 #
 # Usage:
 #   bash init.sh                      # normal run
@@ -284,13 +284,13 @@ fi
 # =============================================================================
 # 6.  .NET 8 SDK
 # =============================================================================
-step "6/6  .NET 8 SDK"
+step "6/6  .NET 10 SDK"
 
 if command -v dotnet &>/dev/null; then
   ok ".NET $(dotnet --version 2>/dev/null || echo '(version unknown)')"
 else
   warn ".NET SDK not found."
-  if confirm "Install .NET 8 SDK now?"; then
+  if confirm "Install .NET 10 SDK now?"; then
     if [ "$OS" = "macos" ]; then
       ensure_brew
       brew install --cask dotnet-sdk
@@ -298,7 +298,7 @@ else
       # Use the official Microsoft install script — works on all Linux distros
       info "Running official .NET install script from https://dot.net/v1/dotnet-install.sh"
       curl -fsSL https://dot.net/v1/dotnet-install.sh \
-        | sudo bash -s -- --channel 8.0 --install-dir /usr/local/share/dotnet
+        | sudo bash -s -- --channel 10.0 --install-dir /usr/local/share/dotnet
       sudo ln -sf /usr/local/share/dotnet/dotnet /usr/local/bin/dotnet 2>/dev/null || true
     fi
     ok ".NET SDK installed."
