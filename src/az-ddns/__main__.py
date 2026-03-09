@@ -211,7 +211,11 @@ def get_dotenv_paths(config_path: str) -> List[str]:
 
 
 def select_dotenv_target(dotenv_paths: List[str]) -> str:
-    """Pick where to create a new .env file when initializing."""
+    """Pick where to create a new .env file when initializing.
+
+    The target prefers the config directory when both cwd and config paths
+    are available.
+    """
     return dotenv_paths[-1]
 
 
@@ -231,7 +235,7 @@ def prompt_required_value(
     if not sys.stdin.isatty() and not default:
         raise RuntimeError(
             f"Required initialization value missing: {prompt}. "
-            f"Pass it using the {arg_name} flag."
+            f"Pass it using the {arg_name} command-line argument."
         )
     while True:
         value = prompt_value(prompt, default=default)
@@ -678,7 +682,7 @@ def update_domain(
     ttl: int,
     mx_pref: int,
     all_zones: List[dict],
-) -> Tuple[dict, bool]:
+) -> Tuple[Dict[str, Dict[str, str]], bool]:
     """
     Bring all configured DNS records for *domain* into the desired state.
 
@@ -698,7 +702,7 @@ def update_domain(
     domain_state: Dict[str, Dict[str, str]] = {
         k: dict(v) for k, v in state.get(domain, {}).items()
     }
-    had_errors = False
+    had_update_errors = False
 
     for rtype, records in domain_cfg.items():
         rt = rtype.upper()
@@ -738,9 +742,9 @@ def update_domain(
                     "  Failed to set %s %r in %s: %s",
                     rt, name, domain, exc.stderr,
                 )
-                had_errors = True
+                had_update_errors = True
 
-    return domain_state, had_errors
+    return domain_state, had_update_errors
 
 
 # ---------------------------------------------------------------------------
@@ -798,7 +802,7 @@ def run_once(
     log.info("Found %d Azure DNS zone(s)", len(all_zones))
 
     new_state: dict = {}
-    has_failures = False
+    had_update_errors = False
     for domain, domain_cfg in domains.items():
         log.info("Processing domain: %s", domain)
         domain_state, domain_failed = update_domain(
@@ -807,9 +811,9 @@ def run_once(
             ttl=ttl, mx_pref=mx_pref, all_zones=all_zones,
         )
         new_state[domain] = domain_state
-        has_failures = has_failures or domain_failed
+        had_update_errors = had_update_errors or domain_failed
 
-    if has_failures:
+    if had_update_errors:
         log.error("Update failed; skipping state save.")
         return
 
