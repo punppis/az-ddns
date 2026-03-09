@@ -204,7 +204,8 @@ def _az_install_command() -> list[str] | None:
         return ["winget", "install", "--id", "Microsoft.AzureCLI", "-e"]
 
     if sys.platform.startswith("linux"):
-        # Prefer the official Microsoft apt-get script for Debian/Ubuntu
+        # Official Microsoft installer script for Debian/Ubuntu (requires apt-get).
+        # Source: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux
         try:
             subprocess.run(
                 ["apt-get", "--version"],
@@ -255,7 +256,7 @@ def install_az_cli() -> bool:
         ok("Azure CLI installed successfully.")
         return True
 
-    err("Azure CLI still not found after install. Please open a new terminal and re-run.")
+    err("Azure CLI still not found after install. You may need to restart your terminal or check your PATH configuration.")
     return False
 
 
