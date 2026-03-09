@@ -8,13 +8,34 @@ Written in Python 3, runs on **Windows, Linux, and macOS**.
 
 ## Quick start
 
-### 1. Create a service principal (one-time)
+### 1. Bootstrap dependencies + Azure setup (one command)
 
-```powershell
-./init.ps1 -SubscriptionId <sub-id>
+**Linux / macOS**
+```bash
+bash init.sh
 ```
 
-This creates a `DNS Zone Contributor` service principal and prints its credentials.
+**Windows** (PowerShell)
+```powershell
+.\init.ps1
+```
+
+Both scripts install all required local tools (Python 3, Azure CLI, Docker,
+Node.js, Azure Functions Core Tools v4, .NET 8 SDK) if missing — asking before
+each install — then launch `init.py` for interactive Azure provisioning.
+
+`init.py` will guide you through:
+- Selecting / creating a resource group (default: `dynamic-dns`)
+- Selecting / creating a Function App (Consumption plan — cheapest)
+- Creating a service principal with `DNS Zone Contributor`
+- Selecting / creating an Azure Cache for Redis instance (optional)
+- Writing all credentials to `.env`
+
+> **Direct run** (if all tools are already installed):
+> ```bash
+> python3 init.py       # Linux / macOS
+> python  init.py       # if 'python' is Python 3 on your system
+> ```
 
 ### 2. Create your config file
 
