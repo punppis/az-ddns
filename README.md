@@ -8,19 +8,17 @@ Written in Python 3, runs on **Windows, Linux, and macOS**.
 
 ## Quick start
 
-### 1. Create a service principal (one-time)
-
-```powershell
-./init.ps1 -SubscriptionId <sub-id>
-```
-
-This creates a `DNS Zone Contributor` service principal and prints its credentials.
-
-### 2. Create your config file
+### 1. Initialize credentials and config
 
 ```bash
 python3 src/az-ddns --init --config dns.json
 ```
+
+This initializes `.env` (creating a `DNS Zone Contributor` service principal via
+the Azure CLI) and writes a sample `dns.json` if they do not already exist.
+Make sure you're logged in with `az login` before running initialization.
+
+### 2. Configure your domains
 
 Edit `dns.json` to list the domains you want to manage:
 
@@ -83,6 +81,8 @@ For local runs, you can place these variables in a `.env` file in the current
 working directory or alongside your `dns.json` config; the script will load it
 automatically without overwriting variables that are already set. Lines may use
 `#` for comments; quote values that need literal `#` characters.
+Initialization checks run by default; use `--no-init` to skip prompts or
+creation of `.env` and `dns.json`.
 
 ### CLI flags
 
@@ -91,8 +91,15 @@ python3 az-ddns --help
 
   --config PATH         Path to dns.json config file (required)
   --once                Run one cycle and exit
-  --init                Write a sample config to --config path and exit
+  --init                Initialize missing .env/dns.json and exit
+  --no-init             Skip initialization checks for .env/dns.json
   --force               Force-update every record ignoring cached state
+  --subscription-id ID  Azure subscription ID for service principal creation
+  --resource-group NAME Resource group for service principal creation
+  --sp-name NAME        Service principal name
+  --dns-mx-target VALUE Default DNS_MX_TARGET value for .env initialization
+  --dns-cname-target VALUE Default DNS_CNAME_TARGET value for .env initialization
+  --dns-a-target VALUE  Optional DNS_A_TARGET value for .env initialization
   --interval SECONDS    Seconds between update cycles (default: 900)
   --ttl SECONDS         DNS record TTL (default: 3600)
   --mx-preference N     MX preference value (default: 10)

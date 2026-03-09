@@ -32,6 +32,10 @@ Azure credentials (environment variables):
     AZURE_CLIENT_SECRET           (required, or AZURE_CLIENT_SECRET_FILE)
     AZURE_CLIENT_SECRET_FILE      (alternative: path to file containing the secret)
 
+Init behaviour:
+    * If .env or dns.json is missing, initialization runs by default.
+    * Use --no-init to skip initialization checks.
+
 Behaviour:
     * First run (no "state" in config): update every configured record via az CLI.
     * IP unchanged, < 12 h since last run: verify A records with system DNS only;
@@ -71,6 +75,8 @@ DEFAULT_INTERVAL_SECONDS = 15 * 60   # 15 minutes
 FORCE_CHECK_AFTER_HOURS  = 12        # full az-CLI check after 12 h of no update
 DEFAULT_TTL              = 3600
 DEFAULT_MX_PREFERENCE    = 10
+DEFAULT_RESOURCE_GROUP   = "dns-zones"
+DEFAULT_SP_NAME          = "dns-updater-sp"
 
 IP_LOOKUP_SERVICES: List[str] = [
     "https://api.ipify.org?format=text",
@@ -194,6 +200,41 @@ def load_dotenv(path: str) -> None:
         log.info("Loaded %d environment variable(s) from %s", loaded, path)
 
 
+def get_dotenv_paths(config_path: str) -> List[str]:
+    """Return the candidate .env paths (cwd first, then config directory)."""
+    paths = [os.path.join(os.getcwd(), ".env")]
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    config_dotenv = os.path.join(config_dir, ".env")
+    if config_dotenv not in paths:
+        paths.append(config_dotenv)
+    return paths
+
+
+def select_dotenv_target(dotenv_paths: List[str]) -> str:
+    """Pick where to create a new .env file when initializing."""
+    return dotenv_paths[-1] if dotenv_paths else os.path.join(os.getcwd(), ".env")
+
+
+def prompt_value(prompt: str, default: Optional[str] = None) -> str:
+    """Prompt for a value, returning the default when provided and empty."""
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{prompt}{suffix}: ").strip()
+    return value or (default or "")
+
+
+def prompt_required_value(prompt: str, default: Optional[str] = None) -> str:
+    """Prompt until a non-empty value is provided."""
+    if not sys.stdin.isatty() and not default:
+        raise RuntimeError(
+            f"{prompt} is required for initialization; pass it explicitly."
+        )
+    while True:
+        value = prompt_value(prompt, default=default)
+        if value:
+            return value
+        log.warning("%s is required.", prompt)
+
+
 def resolve_a_record(fqdn: str) -> Optional[str]:
     """Resolve an A record via the system DNS resolver (no az CLI)."""
     try:
@@ -242,6 +283,64 @@ def create_sample_config(path: str) -> None:
     print("Edit it to configure your domains, then run without --init.")
 
 
+def ensure_required_files(config_path: str, dotenv_paths: List[str]) -> None:
+    """Ensure required config files exist when initialization is enabled."""
+    if not any(os.path.isfile(path) for path in dotenv_paths):
+        raise RuntimeError(
+            "No .env file found. Run with --init to create one or "
+            "pass --no-init to skip initialization checks."
+        )
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(
+            f"Config file not found: {config_path}\n"
+            f"Run 'python3 az-ddns --init --config {config_path}' to create one."
+        )
+
+
+def run_init_checks(
+    config_path: str,
+    dotenv_paths: List[str],
+    subscription_id: Optional[str],
+    resource_group: str,
+    sp_name: str,
+    dns_mx_target: Optional[str],
+    dns_cname_target: Optional[str],
+    dns_a_target: Optional[str],
+) -> bool:
+    """Ensure .env and config exist, creating them if needed."""
+    init_performed = False
+    if not any(os.path.isfile(path) for path in dotenv_paths):
+        target_path = select_dotenv_target(dotenv_paths)
+        sub_id = subscription_id or prompt_required_value(
+            "Enter Azure Subscription ID"
+        )
+        mx_target = dns_mx_target or prompt_required_value(
+            "Enter DNS_MX_TARGET (MX exchange)"
+        )
+        cname_target = dns_cname_target or prompt_required_value(
+            "Enter DNS_CNAME_TARGET (CNAME target)"
+        )
+        sp = create_service_principal(sub_id, resource_group, sp_name)
+        write_env_file(
+            target_path,
+            sp,
+            sub_id,
+            resource_group,
+            mx_target,
+            cname_target,
+            dns_a_target,
+        )
+        init_performed = True
+
+    if not os.path.exists(config_path):
+        create_sample_config(config_path)
+        init_performed = True
+
+    if init_performed:
+        log.info("Initialization complete. Review files, then re-run.")
+    return init_performed
+
+
 # ---------------------------------------------------------------------------
 # Azure helpers
 # ---------------------------------------------------------------------------
@@ -251,6 +350,68 @@ def _az(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     cmd = ["az"] + list(args)
     log.debug("az %s", " ".join(args))
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def create_service_principal(
+    subscription_id: str,
+    resource_group: str,
+    name: str,
+) -> dict:
+    """Create a DNS Zone Contributor service principal and return its details."""
+    log.info("Setting subscription...")
+    _az("account", "set", "--subscription", subscription_id)
+    scope = f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
+    log.info("Creating service principal scoped to %s...", scope)
+    result = _az(
+        "ad", "sp", "create-for-rbac",
+        "--name", name,
+        "--role", "DNS Zone Contributor",
+        "--scopes", scope,
+        "--output", "json",
+    )
+    sp = json.loads(result.stdout or "{}")
+    if not sp:
+        raise RuntimeError("Failed to create service principal.")
+    return sp
+
+
+def write_env_file(
+    path: str,
+    sp: dict,
+    subscription_id: str,
+    resource_group: str,
+    dns_mx_target: str,
+    dns_cname_target: str,
+    dns_a_target: Optional[str] = None,
+) -> None:
+    """Write a .env file with service principal credentials."""
+    lines = [
+        f"AZURE_TENANT_ID={sp.get('tenant', '')}",
+        f"AZURE_CLIENT_ID={sp.get('appId', '')}",
+        f"AZURE_CLIENT_SECRET={sp.get('password', '')}",
+        f"AZURE_SUBSCRIPTION_ID={subscription_id}",
+        "",
+        f"AZURE_RESOURCE_GROUP={resource_group}",
+        f"DNS_MX_TARGET={dns_mx_target}",
+        f"DNS_CNAME_TARGET={dns_cname_target}",
+    ]
+    if dns_a_target:
+        lines.append(f"DNS_A_TARGET={dns_a_target}")
+    lines.extend(
+        [
+            "",
+            "# Optional",
+            "# IP_STATE_FILE=/state/last_ip.txt",
+            "# INTERVAL_SECONDS=300",
+            "# TTL=3600",
+            "# MX_PREFERENCE=10",
+            "# FORCE_MX=true",
+            "# FORCE_CNAME=true",
+        ]
+    )
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines).strip() + "\n")
+    log.info("Created .env at %s", path)
 
 
 def get_azure_secret() -> str:
@@ -512,17 +673,17 @@ def update_domain(
     ttl: int,
     mx_pref: int,
     all_zones: List[dict],
-) -> dict:
+) -> Tuple[dict, bool]:
     """
     Bring all configured DNS records for *domain* into the desired state.
 
-    Returns the updated per-domain state dict (record type -> name -> value).
+    Returns the updated per-domain state dict and a flag indicating errors.
     """
     try:
         zone, rg = find_zone_for_domain(domain, all_zones)
     except RuntimeError as exc:
         log.error("%s", exc)
-        return state.get(domain, {})
+        return state.get(domain, {}), True
 
     log.info("  Zone: %s  RG: %s", zone, rg)
 
@@ -530,6 +691,7 @@ def update_domain(
     domain_state: Dict[str, Dict[str, str]] = {
         k: dict(v) for k, v in state.get(domain, {}).items()
     }
+    had_errors = False
 
     for rtype, records in domain_cfg.items():
         rt = rtype.upper()
@@ -569,8 +731,9 @@ def update_domain(
                     "  Failed to set %s %r in %s: %s",
                     rt, name, domain, exc.stderr,
                 )
+                had_errors = True
 
-    return domain_state
+    return domain_state, had_errors
 
 
 # ---------------------------------------------------------------------------
@@ -628,13 +791,20 @@ def run_once(
     log.info("Found %d Azure DNS zone(s)", len(all_zones))
 
     new_state: dict = {}
+    update_failed = False
     for domain, domain_cfg in domains.items():
         log.info("Processing domain: %s", domain)
-        new_state[domain] = update_domain(
+        domain_state, domain_failed = update_domain(
             domain, domain_cfg, current_ip, state,
             force=force or first_run or force_due_time,
             ttl=ttl, mx_pref=mx_pref, all_zones=all_zones,
         )
+        new_state[domain] = domain_state
+        update_failed = update_failed or domain_failed
+
+    if update_failed:
+        log.error("Update failed; skipping state save.")
+        return
 
     config["state"] = new_state
     save_config(config_path, config)
@@ -665,13 +835,44 @@ def main() -> None:
         "--once", action="store_true",
         help="Run one update cycle then exit",
     )
-    parser.add_argument(
+    init_group = parser.add_mutually_exclusive_group()
+    init_group.add_argument(
         "--init", action="store_true",
-        help="Write a sample config file to --config path and exit",
+        help="Initialize missing .env/dns.json and exit",
+    )
+    init_group.add_argument(
+        "--no-init", action="store_true",
+        help="Skip initialization checks for .env/dns.json",
     )
     parser.add_argument(
         "--force", action="store_true",
         help="Force-update every record regardless of cached state",
+    )
+    parser.add_argument(
+        "--subscription-id",
+        help="Azure subscription ID for service principal creation",
+    )
+    parser.add_argument(
+        "--resource-group",
+        default=DEFAULT_RESOURCE_GROUP,
+        help=f"Resource group for service principal creation (default: {DEFAULT_RESOURCE_GROUP})",
+    )
+    parser.add_argument(
+        "--sp-name",
+        default=DEFAULT_SP_NAME,
+        help=f"Service principal name (default: {DEFAULT_SP_NAME})",
+    )
+    parser.add_argument(
+        "--dns-mx-target",
+        help="Default DNS_MX_TARGET value for .env initialization",
+    )
+    parser.add_argument(
+        "--dns-cname-target",
+        help="Default DNS_CNAME_TARGET value for .env initialization",
+    )
+    parser.add_argument(
+        "--dns-a-target",
+        help="Optional DNS_A_TARGET value for .env initialization",
     )
     parser.add_argument(
         "--interval", type=int, default=DEFAULT_INTERVAL_SECONDS,
@@ -693,19 +894,42 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    dotenv_paths = [os.path.join(os.getcwd(), ".env")]
-    config_dir = os.path.dirname(os.path.abspath(args.config))
-    config_dotenv = os.path.join(config_dir, ".env")
-    if config_dotenv not in dotenv_paths:
-        dotenv_paths.append(config_dotenv)
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
+
+    dotenv_paths = get_dotenv_paths(args.config)
+
+    if args.init:
+        run_init_checks(
+            args.config,
+            dotenv_paths,
+            args.subscription_id,
+            args.resource_group,
+            args.sp_name,
+            args.dns_mx_target,
+            args.dns_cname_target,
+            args.dns_a_target,
+        )
+        return
+
+    if not args.no_init:
+        init_performed = run_init_checks(
+            args.config,
+            dotenv_paths,
+            args.subscription_id,
+            args.resource_group,
+            args.sp_name,
+            args.dns_mx_target,
+            args.dns_cname_target,
+            args.dns_a_target,
+        )
+        if init_performed:
+            return
+
     for dotenv_path in dotenv_paths:
         load_dotenv(dotenv_path)
 
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
-
-    if args.init:
-        create_sample_config(args.config)
-        return
+    if not args.no_init:
+        ensure_required_files(args.config, dotenv_paths)
 
     if args.once:
         run_once(
