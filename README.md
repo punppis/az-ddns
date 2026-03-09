@@ -28,13 +28,13 @@ Edit `dns.json` to list the domains you want to manage:
 {
     "lastUpdate": "",
     "domains": {
-        "office.kitkagames.com": {
+        "subdomain.example.com": {
             "A":     { "@": "{{IP}}" },
             "CNAME": { "*": "{{DOMAIN}}" }
         },
-        "smb.kitkagames.com": {
+        "smb.example.com": {
             "A":     { "@": "{{IP}}" },
-            "MX":    { "@": "mail.kitkagames.com" }
+            "MX":    { "@": "mail.example.com" }
         }
     },
     "state": {}
@@ -105,17 +105,17 @@ The config file is both the **input** (domain/record configuration) and the
 {
     "lastUpdate": "2024-06-01T12:00:00Z",
     "domains": {
-        "office.kitkagames.com": {
+        "subdomain.example.com": {
             "A":     { "@":  "{{IP}}" },
             "CNAME": { "*":  "{{DOMAIN}}" },
-            "MX":    { "@":  "mail.kitkagames.com" }
+            "MX":    { "@":  "mail.example.com" }
         }
     },
     "state": {
-        "office.kitkagames.com": {
+        "subdomain.example.com": {
             "A":     { "@":  "12.3.4.5" },
-            "CNAME": { "*":  "office.kitkagames.com" },
-            "MX":    { "@":  "mail.kitkagames.com" }
+            "CNAME": { "*":  "subdomain.example.com" },
+            "MX":    { "@":  "mail.example.com" }
         }
     }
 }
@@ -156,10 +156,10 @@ back with updated state after each cycle.
 
 ## Azure zone discovery
 
-For a domain entry like `"office.kitkagames.com"` the script lists all Azure
+For a domain entry like `"subdomain.example.com"` the script lists all Azure
 DNS zones visible to the service principal and picks the **longest-suffix
 match**.  This means:
 
-* If `office.kitkagames.com` is its own Azure DNS zone, it is used directly.
-* If only `kitkagames.com` exists as a zone, that zone is used and the records
+* If `subdomain.example.com` is its own Azure DNS zone, it is used directly.
+* If only `example.com` exists as a zone, that zone is used and the records
   are updated within it.

@@ -232,8 +232,8 @@ def find_zone_for_domain(
 
     Example
     -------
-    Domain ``office.kitkagames.com`` matches zone ``office.kitkagames.com``
-    in preference to ``kitkagames.com``.
+    Domain ``subdomain.example.com`` matches zone ``subdomain.example.com``
+    in preference to ``example.com``.
     """
     domain_lower = domain.lower().rstrip(".")
     best_name: Optional[str] = None
