@@ -415,10 +415,17 @@ def get_default_subscription_id() -> Optional[str]:
     try:
         result = _az("account", "show", "--output", "json")
     except subprocess.CalledProcessError as exc:
-        log.debug("Azure account lookup failed: %s", exc.stderr or exc)
+        log.debug(
+            "Azure account lookup failed: %s",
+            exc.stderr if exc.stderr else str(exc),
+        )
+        return None
+    output = (result.stdout or "").strip()
+    if not output:
+        log.debug("Azure account lookup returned empty output.")
         return None
     try:
-        account = json.loads(result.stdout or "{}")
+        account = json.loads(output)
     except json.JSONDecodeError as exc:
         log.debug("Failed to parse az account output: %s", exc)
         return None
