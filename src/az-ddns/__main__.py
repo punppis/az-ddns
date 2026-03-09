@@ -222,11 +222,16 @@ def prompt_value(prompt: str, default: Optional[str] = None) -> str:
     return value or (default or "")
 
 
-def prompt_required_value(prompt: str, default: Optional[str] = None) -> str:
+def prompt_required_value(
+    prompt: str,
+    arg_name: str,
+    default: Optional[str] = None,
+) -> str:
     """Prompt until a non-empty value is provided."""
     if not sys.stdin.isatty() and not default:
         raise RuntimeError(
-            f"{prompt} is required for initialization; pass it explicitly."
+            f"Required initialization value missing: {prompt}. "
+            f"Pass it using {arg_name}."
         )
     while True:
         value = prompt_value(prompt, default=default)
@@ -287,8 +292,8 @@ def ensure_required_files(config_path: str, dotenv_paths: List[str]) -> None:
     """Ensure required config files exist when initialization is enabled."""
     if not any(os.path.isfile(path) for path in dotenv_paths):
         raise RuntimeError(
-            "No .env file found. Run with --init to create one or "
-            "pass --no-init to skip initialization checks."
+            "No .env file found. Run with --init to create one, or "
+            "use --no-init only if environment variables are already set."
         )
     if not os.path.exists(config_path):
         raise FileNotFoundError(
@@ -311,15 +316,24 @@ def run_init_checks(
     init_performed = False
     if not any(os.path.isfile(path) for path in dotenv_paths):
         target_path = select_dotenv_target(dotenv_paths)
-        sub_id = subscription_id or prompt_required_value(
-            "Enter Azure Subscription ID"
-        )
-        mx_target = dns_mx_target or prompt_required_value(
-            "Enter DNS_MX_TARGET (MX exchange)"
-        )
-        cname_target = dns_cname_target or prompt_required_value(
-            "Enter DNS_CNAME_TARGET (CNAME target)"
-        )
+        sub_id = subscription_id
+        if sub_id is None:
+            sub_id = prompt_required_value(
+                "Enter Azure Subscription ID",
+                "--subscription-id",
+            )
+        mx_target = dns_mx_target
+        if mx_target is None:
+            mx_target = prompt_required_value(
+                "Enter DNS_MX_TARGET (MX exchange)",
+                "--dns-mx-target",
+            )
+        cname_target = dns_cname_target
+        if cname_target is None:
+            cname_target = prompt_required_value(
+                "Enter DNS_CNAME_TARGET (CNAME target)",
+                "--dns-cname-target",
+            )
         sp = create_service_principal(sub_id, resource_group, sp_name)
         write_env_file(
             target_path,
@@ -370,7 +384,8 @@ def create_service_principal(
         "--output", "json",
     )
     sp = json.loads(result.stdout or "{}")
-    if not sp:
+    required_keys = ("tenant", "appId", "password")
+    if not all(sp.get(key) for key in required_keys):
         raise RuntimeError("Failed to create service principal.")
     return sp
 
@@ -410,7 +425,7 @@ def write_env_file(
         ]
     )
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines).strip() + "\n")
+        fh.write("\n".join(lines) + "\n")
     log.info("Created .env at %s", path)
 
 
@@ -791,7 +806,7 @@ def run_once(
     log.info("Found %d Azure DNS zone(s)", len(all_zones))
 
     new_state: dict = {}
-    update_failed = False
+    has_failures = False
     for domain, domain_cfg in domains.items():
         log.info("Processing domain: %s", domain)
         domain_state, domain_failed = update_domain(
@@ -800,9 +815,9 @@ def run_once(
             ttl=ttl, mx_pref=mx_pref, all_zones=all_zones,
         )
         new_state[domain] = domain_state
-        update_failed = update_failed or domain_failed
+        has_failures = has_failures or domain_failed
 
-    if update_failed:
+    if has_failures:
         log.error("Update failed; skipping state save.")
         return
 
