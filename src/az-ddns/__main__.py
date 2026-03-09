@@ -120,6 +120,23 @@ def load_dotenv(path: str) -> None:
     if not os.path.isfile(path):
         return
 
+    def parse_quoted_value(raw: str) -> Tuple[str, str, bool]:
+        quote = raw[0]
+        escaped = False
+        parsed: List[str] = []
+        for index, char in enumerate(raw[1:], start=1):
+            if escaped:
+                parsed.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == quote:
+                return "".join(parsed), raw[index + 1:], True
+            parsed.append(char)
+        return raw, "", False
+
     loaded = 0
     with open(path, encoding="utf-8") as fh:
         for raw_line in fh:
@@ -136,12 +153,11 @@ def load_dotenv(path: str) -> None:
                 continue
             value = value.strip()
             if value and value[0] in ("'", '"'):
-                quote = value[0]
-                end_index = value.find(quote, 1)
-                if end_index != -1:
-                    remainder = value[end_index + 1:].strip()
+                parsed_value, remainder, closed = parse_quoted_value(value)
+                if closed:
+                    remainder = remainder.strip()
                     if not remainder or remainder.startswith("#"):
-                        value = value[1:end_index]
+                        value = parsed_value
             else:
                 value = re.split(r"\s+#", value, 1)[0].rstrip()
             os.environ[key] = value
