@@ -119,6 +119,9 @@ def parse_quoted_env_value(raw: str) -> Tuple[str, str, bool]:
     """
     Parse a quoted .env value.
 
+    Args:
+        raw: Raw value string starting with a quote character.
+
     Returns a tuple of (value, remainder, closed) where:
     - value: the parsed value inside the quotes
     - remainder: any trailing text after the closing quote
@@ -165,22 +168,19 @@ def load_dotenv(path: str) -> None:
                 parsed_value, remainder, closed = parse_quoted_env_value(value)
                 if closed:
                     remainder = remainder.strip()
-                    if not remainder or remainder.startswith("#"):
-                        value = parsed_value
-                    else:
+                    if remainder and not remainder.startswith("#"):
                         log.warning(
                             "Ignoring trailing content after quoted .env value for %s (%s)",
                             key,
                             path,
                         )
-                        value = parsed_value
                 else:
                     log.warning(
                         "Unclosed quote in .env value for %s (%s)", key, path
                     )
-                    value = parsed_value
+                value = parsed_value
             else:
-                value = re.split(r"\s+#", value, 1)[0].rstrip()
+                value = re.split(r"\s*#", value, 1)[0].rstrip()
             os.environ[key] = value
             loaded += 1
 
