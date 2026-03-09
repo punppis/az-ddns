@@ -212,7 +212,7 @@ def get_dotenv_paths(config_path: str) -> List[str]:
 
 def select_dotenv_target(dotenv_paths: List[str]) -> str:
     """Pick where to create a new .env file when initializing."""
-    return dotenv_paths[-1] if dotenv_paths else os.path.join(os.getcwd(), ".env")
+    return dotenv_paths[-1]
 
 
 def prompt_value(prompt: str, default: Optional[str] = None) -> str:
@@ -286,20 +286,6 @@ def create_sample_config(path: str) -> None:
         json.dump(SAMPLE_CONFIG, fh, indent=4)
     print(f"Sample config written to {path}")
     print("Edit it to configure your domains, then run without --init.")
-
-
-def ensure_required_files(config_path: str, dotenv_paths: List[str]) -> None:
-    """Ensure required config files exist when initialization is enabled."""
-    if not any(os.path.isfile(path) for path in dotenv_paths):
-        raise RuntimeError(
-            "No .env file found. Run with --init to create one, or "
-            "use --no-init only if environment variables are already set."
-        )
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(
-            f"Config file not found: {config_path}\n"
-            f"Run this script with --init and --config {config_path} to create one."
-        )
 
 
 def run_init_checks(
@@ -385,8 +371,12 @@ def create_service_principal(
     )
     sp = json.loads(result.stdout or "{}")
     required_keys = ("tenant", "appId", "password")
-    if not all(sp.get(key) for key in required_keys):
-        raise RuntimeError("Failed to create service principal.")
+    missing_keys = [key for key in required_keys if not sp.get(key)]
+    if missing_keys:
+        raise RuntimeError(
+            "Failed to create service principal. Missing required fields: "
+            f"{', '.join(missing_keys)}"
+        )
     return sp
 
 
@@ -693,6 +683,8 @@ def update_domain(
     Bring all configured DNS records for *domain* into the desired state.
 
     Returns the updated per-domain state dict and a flag indicating errors.
+
+    The error flag is True when any record update failed or the zone was missing.
     """
     try:
         zone, rg = find_zone_for_domain(domain, all_zones)
@@ -939,9 +931,6 @@ def main() -> None:
         )
         if init_performed:
             return
-
-    if not args.no_init:
-        ensure_required_files(args.config, dotenv_paths)
 
     for dotenv_path in dotenv_paths:
         load_dotenv(dotenv_path)
