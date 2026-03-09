@@ -233,7 +233,9 @@ def prompt_required_value(
     max_attempts: int = 3,
 ) -> str:
     """Prompt until a non-empty value is provided."""
-    if not sys.stdin.isatty() and not default:
+    if not sys.stdin.isatty():
+        if default is not None:
+            return default
         raise RuntimeError(
             f"Required initialization value missing: {prompt}. "
             f"Pass it using the {arg_name} command-line argument."
@@ -329,7 +331,12 @@ def run_init_checks(
                 "Enter DNS_CNAME_TARGET (CNAME target)",
                 "--dns-cname-target",
             )
-        sp = create_service_principal(sub_id, resource_group, sp_name)
+        try:
+            sp = create_service_principal(sub_id, resource_group, sp_name)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Failed during service principal creation for initialization."
+            ) from exc
         write_env_file(
             target_path,
             sp,
@@ -368,16 +375,22 @@ def create_service_principal(
 ) -> dict:
     """Create a DNS Zone Contributor service principal and return its details."""
     log.info("Setting subscription...")
-    _az("account", "set", "--subscription", subscription_id)
+    try:
+        _az("account", "set", "--subscription", subscription_id)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError("Failed to set Azure subscription.") from exc
     scope = f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
     log.info("Creating service principal scoped to %s...", scope)
-    result = _az(
-        "ad", "sp", "create-for-rbac",
-        "--name", name,
-        "--role", "DNS Zone Contributor",
-        "--scopes", scope,
-        "--output", "json",
-    )
+    try:
+        result = _az(
+            "ad", "sp", "create-for-rbac",
+            "--name", name,
+            "--role", "DNS Zone Contributor",
+            "--scopes", scope,
+            "--output", "json",
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError("Failed to create service principal.") from exc
     try:
         sp = json.loads(result.stdout or "{}")
     except json.JSONDecodeError as exc:
@@ -827,7 +840,7 @@ def run_once(
             failed_domains.append(domain)
 
     if has_update_errors:
-        failed_list = ", ".join(failed_domains) if failed_domains else "unknown"
+        failed_list = ", ".join(failed_domains)
         log.error("Update failed for domain(s): %s; skipping state save.", failed_list)
         return
 
