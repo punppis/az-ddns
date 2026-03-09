@@ -187,6 +187,78 @@ def check_az_installed() -> bool:
         return False
 
 
+def _az_install_command() -> list[str] | None:
+    """
+    Return a shell command (as a list) that will install the Azure CLI on the
+    current platform, or None if no automatic install is known.
+
+    Supported platforms:
+      • Linux with apt-get  — official Microsoft script for Debian/Ubuntu
+      • macOS               — brew install azure-cli
+      • Windows             — winget install Microsoft.AzureCLI
+    """
+    if sys.platform == "darwin":
+        return ["brew", "install", "azure-cli"]
+
+    if sys.platform == "win32":
+        return ["winget", "install", "--id", "Microsoft.AzureCLI", "-e"]
+
+    if sys.platform.startswith("linux"):
+        # Prefer the official Microsoft apt-get script for Debian/Ubuntu
+        try:
+            subprocess.run(
+                ["apt-get", "--version"],
+                capture_output=True, check=True,
+            )
+            return [
+                "bash", "-c",
+                "curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash",
+            ]
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pass
+
+    return None
+
+
+def install_az_cli() -> bool:
+    """
+    Offer to install the Azure CLI.  Returns True if az is available after the
+    attempt, False otherwise.
+    """
+    err("'az' CLI not found.")
+    print()
+
+    cmd = _az_install_command()
+    if cmd is None:
+        # No known automatic installer — just point to the docs
+        info("Visit https://aka.ms/installazurecli for install instructions.")
+        return False
+
+    # Show the user what will be run so there are no surprises
+    cmd_display = " ".join(cmd)
+    info(f"Install command: {cmd_display}")
+    print()
+
+    if not confirm("Install the Azure CLI now?", default=True):
+        info("Skipped. Install manually from https://aka.ms/installazurecli")
+        return False
+
+    try:
+        subprocess.run(cmd, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        err(f"Installation failed: {exc}")
+        info("Please install manually from https://aka.ms/installazurecli")
+        return False
+
+    # Re-check
+    if check_az_installed():
+        ok("Azure CLI installed successfully.")
+        return True
+
+    err("Azure CLI still not found after install. Please open a new terminal and re-run.")
+    return False
+
+
 def check_logged_in() -> bool:
     r = _az("account", "show", check=False)
     return r.returncode == 0
@@ -377,8 +449,8 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     step("1/8  Check az CLI")
     if not check_az_installed():
-        err("'az' CLI not found. Install it from https://aka.ms/installazurecli")
-        sys.exit(1)
+        if not install_az_cli():
+            sys.exit(1)
     ok("az CLI is installed.")
 
     # ------------------------------------------------------------------
