@@ -16,7 +16,7 @@ namespace AzDdns.Services;
 /// </summary>
 public sealed class ConcurrencyLimiter : IAsyncDisposable
 {
-    private const string RedisLockKey = "az-ddns:update-lock";
+    private const string RedisLockKey = "DNS_ddns:update-lock";
 
     private readonly ILogger<ConcurrencyLimiter> _logger;
     private readonly TimeSpan _lockTimeout;
