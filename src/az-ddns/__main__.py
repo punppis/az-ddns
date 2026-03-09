@@ -159,7 +159,7 @@ def load_dotenv(path: str) -> None:
                     if not remainder or remainder.startswith("#"):
                         value = parsed_value
             else:
-                value = re.split(r"\s+#", value, 1)[0].rstrip()
+                value = re.split(r"\s*#", value, 1)[0].rstrip()
             os.environ[key] = value
             loaded += 1
 
