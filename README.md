@@ -148,7 +148,8 @@ variable is needed.
 
 ## Docker Compose
 
-Create a `.env` file in the repository root and fill in your credentials, then:
+Create a `.env` file alongside `docker-compose.yml` and fill in your
+credentials, then:
 
 ```bash
 docker compose up --build

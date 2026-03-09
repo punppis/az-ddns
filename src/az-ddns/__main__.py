@@ -183,7 +183,7 @@ def load_dotenv(path: str) -> None:
                     )
                 value = parsed_value
             else:
-                value = re.split(r"\s*#", value, 1)[0].rstrip()
+                value = value.split("#", 1)[0].rstrip()
             os.environ[key] = value
             loaded += 1
 
