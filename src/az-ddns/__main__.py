@@ -231,7 +231,7 @@ def prompt_required_value(
     if not sys.stdin.isatty() and not default:
         raise RuntimeError(
             f"Required initialization value missing: {prompt}. "
-            f"Pass it using {arg_name}."
+            f"Pass it using the {arg_name} flag."
         )
     while True:
         value = prompt_value(prompt, default=default)
@@ -298,7 +298,7 @@ def ensure_required_files(config_path: str, dotenv_paths: List[str]) -> None:
     if not os.path.exists(config_path):
         raise FileNotFoundError(
             f"Config file not found: {config_path}\n"
-            f"Run 'python3 az-ddns --init --config {config_path}' to create one."
+            f"Run this script with --init and --config {config_path} to create one."
         )
 
 
@@ -940,11 +940,11 @@ def main() -> None:
         if init_performed:
             return
 
-    for dotenv_path in dotenv_paths:
-        load_dotenv(dotenv_path)
-
     if not args.no_init:
         ensure_required_files(args.config, dotenv_paths)
+
+    for dotenv_path in dotenv_paths:
+        load_dotenv(dotenv_path)
 
     if args.once:
         run_once(
