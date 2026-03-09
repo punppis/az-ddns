@@ -224,7 +224,7 @@ def save_config(path: str, config: dict) -> None:
     """Persist *config* to *path*, updating the 'lastUpdate' timestamp."""
     config = dict(config)
     config["lastUpdate"] = (
-        datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(config, fh, indent=4)
@@ -454,8 +454,12 @@ def hours_since_last_update(config: dict) -> float:
     if not last:
         return float("inf")
     try:
-        ts = datetime.datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ")
-        return (datetime.datetime.utcnow() - ts).total_seconds() / 3600.0
+        ts = datetime.datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc
+        )
+        return (
+            datetime.datetime.now(datetime.timezone.utc) - ts
+        ).total_seconds() / 3600.0
     except Exception:  # noqa: BLE001
         return float("inf")
 
@@ -733,7 +737,7 @@ def main() -> None:
                 exc_info=(logging.getLogger().level <= logging.DEBUG),
             )
 
-        next_run = datetime.datetime.utcnow() + datetime.timedelta(
+        next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
             seconds=args.interval
         )
         log.info("Next run at %s UTC", next_run.strftime("%Y-%m-%d %H:%M:%S"))
