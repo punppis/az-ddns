@@ -81,7 +81,7 @@ docker compose up --build
 
 For local runs, you can place these variables in a `.env` file in the current
 working directory or alongside your `dns.json` config; the script will load it
-automatically without overriding variables that are already set. Lines may use
+automatically without overwriting variables that are already set. Lines may use
 `#` for comments; quote values that need literal `#` characters.
 
 ### CLI flags

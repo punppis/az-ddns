@@ -164,7 +164,10 @@ def load_dotenv(path: str) -> None:
                 continue
             key, value = line.split("=", 1)
             key = key.strip()
-            if not key or key in os.environ:
+            if not key:
+                log.warning("Skipping .env entry with empty key (%s)", path)
+                continue
+            if key in os.environ:
                 continue
             value = value.strip()
             if value and value[0] in ("'", '"'):
