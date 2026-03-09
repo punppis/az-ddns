@@ -17,6 +17,8 @@ python3 src/az-ddns --init --config dns.json
 This initializes `.env` (creating a `DNS Zone Contributor` service principal via
 the Azure CLI) and writes a sample `dns.json` if they do not already exist.
 Make sure you're logged in with `az login` before running initialization.
+If the Azure CLI is already logged in, the subscription ID is auto-detected and
+offered as the default when prompting for initialization values.
 
 ### 2. Configure your domains
 

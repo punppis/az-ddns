@@ -315,9 +315,11 @@ def run_init_checks(
         target_path = select_dotenv_target(dotenv_paths)
         sub_id = subscription_id
         if sub_id is None:
+            default_subscription_id = get_default_subscription_id()
             sub_id = prompt_required_value(
                 "Enter Azure Subscription ID",
                 "--subscription-id",
+                default=default_subscription_id,
             )
         mx_target = dns_mx_target
         if mx_target is None:
@@ -406,6 +408,24 @@ def create_service_principal(
             f"{', '.join(missing_keys)}"
         )
     return sp
+
+
+def get_default_subscription_id() -> Optional[str]:
+    """Return the current Azure subscription id if logged in."""
+    try:
+        result = _az("account", "show", "--output", "json")
+    except subprocess.CalledProcessError as exc:
+        log.debug("Azure account lookup failed: %s", exc.stderr or exc)
+        return None
+    try:
+        account = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        log.debug("Failed to parse az account output: %s", exc)
+        return None
+    subscription_id = account.get("id")
+    if subscription_id:
+        log.info("Detected Azure subscription %s via az CLI.", subscription_id)
+    return subscription_id
 
 
 def write_env_file(
