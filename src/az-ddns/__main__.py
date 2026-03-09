@@ -230,6 +230,7 @@ def prompt_required_value(
     prompt: str,
     arg_name: str,
     default: Optional[str] = None,
+    max_attempts: int = 3,
 ) -> str:
     """Prompt until a non-empty value is provided."""
     if not sys.stdin.isatty() and not default:
@@ -237,10 +238,14 @@ def prompt_required_value(
             f"Required initialization value missing: {prompt}. "
             f"Pass it using the {arg_name} command-line argument."
         )
+    attempts = 0
     while True:
         value = prompt_value(prompt, default=default)
         if value:
             return value
+        attempts += 1
+        if attempts >= max_attempts:
+            raise RuntimeError(f"{prompt} is required for initialization.")
         log.warning("%s is required.", prompt)
 
 
@@ -373,7 +378,12 @@ def create_service_principal(
         "--scopes", scope,
         "--output", "json",
     )
-    sp = json.loads(result.stdout or "{}")
+    try:
+        sp = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Failed to parse service principal creation response."
+        ) from exc
     required_keys = ("tenant", "appId", "password")
     missing_keys = [key for key in required_keys if not sp.get(key)]
     if missing_keys:
@@ -702,7 +712,7 @@ def update_domain(
     domain_state: Dict[str, Dict[str, str]] = {
         k: dict(v) for k, v in state.get(domain, {}).items()
     }
-    had_update_errors = False
+    has_update_errors = False
 
     for rtype, records in domain_cfg.items():
         rt = rtype.upper()
@@ -742,9 +752,9 @@ def update_domain(
                     "  Failed to set %s %r in %s: %s",
                     rt, name, domain, exc.stderr,
                 )
-                had_update_errors = True
+                has_update_errors = True
 
-    return domain_state, had_update_errors
+    return domain_state, has_update_errors
 
 
 # ---------------------------------------------------------------------------
@@ -802,18 +812,18 @@ def run_once(
     log.info("Found %d Azure DNS zone(s)", len(all_zones))
 
     new_state: dict = {}
-    had_update_errors = False
+    has_update_errors = False
     for domain, domain_cfg in domains.items():
         log.info("Processing domain: %s", domain)
-        domain_state, domain_failed = update_domain(
+        domain_state, domain_has_errors = update_domain(
             domain, domain_cfg, current_ip, state,
             force=force or first_run or force_due_time,
             ttl=ttl, mx_pref=mx_pref, all_zones=all_zones,
         )
         new_state[domain] = domain_state
-        had_update_errors = had_update_errors or domain_failed
+        has_update_errors = has_update_errors or domain_has_errors
 
-    if had_update_errors:
+    if has_update_errors:
         log.error("Update failed; skipping state save.")
         return
 
