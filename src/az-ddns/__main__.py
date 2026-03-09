@@ -115,6 +115,42 @@ def get_public_ip(services: Optional[List[str]] = None) -> str:
     raise RuntimeError("All public IP lookup services failed")
 
 
+def load_dotenv(path: str) -> None:
+    """Load environment variables from a .env file without overwriting."""
+    if not os.path.isfile(path):
+        return
+
+    loaded = 0
+    with open(path, encoding="utf-8") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            value = value.strip()
+            if value and value[0] in ("'", '"'):
+                quote = value[0]
+                end_index = value.find(quote, 1)
+                if end_index != -1:
+                    remainder = value[end_index + 1:].strip()
+                    if not remainder or remainder.startswith("#"):
+                        value = value[1:end_index]
+            else:
+                value = re.split(r"\s+#", value, 1)[0].rstrip()
+            os.environ[key] = value
+            loaded += 1
+
+    if loaded:
+        log.info("Loaded %d environment variable(s) from %s", loaded, path)
+
+
 def resolve_a_record(fqdn: str) -> Optional[str]:
     """Resolve an A record via the system DNS resolver (no az CLI)."""
     try:
@@ -609,6 +645,14 @@ def main() -> None:
         help="Logging verbosity (default: INFO)",
     )
     args = parser.parse_args()
+
+    dotenv_paths = [os.path.join(os.getcwd(), ".env")]
+    config_dir = os.path.dirname(os.path.abspath(args.config))
+    config_dotenv = os.path.join(config_dir, ".env")
+    if config_dotenv not in dotenv_paths:
+        dotenv_paths.append(config_dotenv)
+    for dotenv_path in dotenv_paths:
+        load_dotenv(dotenv_path)
 
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 

@@ -79,6 +79,10 @@ docker compose up --build
 
 \* Provide exactly one of `AZURE_CLIENT_SECRET` or `AZURE_CLIENT_SECRET_FILE`.
 
+For local runs, you can place these variables in a `.env` file in the current
+working directory or alongside your `dns.json` config; the script will load it
+automatically without overriding variables that are already set.
+
 ### CLI flags
 
 ```
@@ -143,7 +147,7 @@ variable is needed.
 
 ## Docker Compose
 
-Copy `.env.example` to `.env` and fill in your credentials, then:
+Create a `.env` file in the repository root and fill in your credentials, then:
 
 ```bash
 docker compose up --build
