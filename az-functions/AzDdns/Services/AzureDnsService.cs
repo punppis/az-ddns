@@ -3,16 +3,16 @@ using Azure.Core;
 using Azure.Identity;
 using Azure.ResourceManager;
 using Azure.ResourceManager.Authorization;
-using Azure.ResourceManager.Authorization.Models;
 using Azure.ResourceManager.Dns;
 using Azure.ResourceManager.Dns.Models;
+using Azure.ResourceManager.Resources;
 using AzDdns.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
+using System.Net;
 using System.Threading.Tasks;
 
 namespace AzDdns.Services;
@@ -24,8 +24,7 @@ namespace AzDdns.Services;
 /// </summary>
 public sealed class AzureDnsService
 {
-    // Well-known RBAC role definition IDs
-    // DNS Zone Contributor: befefa01-2a29-4197-83a8-272ff33ce314
+    // DNS Zone Contributor role definition ID (well-known, stable across all tenants)
     private const string DnsZoneContributorRoleId = "befefa01-2a29-4197-83a8-272ff33ce314";
 
     private readonly ILogger<AzureDnsService> _logger;
@@ -34,7 +33,7 @@ public sealed class AzureDnsService
     private readonly ArmClient _armClient;
     private readonly string _subscriptionId;
 
-    // Cached zone list: refreshed lazily or on demand
+    // Zone list cache (refreshed every 10 minutes)
     private List<(string ZoneName, string ResourceGroup, string SubscriptionId)>? _zoneCache;
     private DateTimeOffset _zoneCacheExpiry = DateTimeOffset.MinValue;
 
@@ -58,7 +57,6 @@ public sealed class AzureDnsService
         }
         else
         {
-            // Managed identity / workload identity fallback
             cred = new DefaultAzureCredential(new DefaultAzureCredentialOptions
             {
                 ManagedIdentityClientId = clientId,
@@ -82,21 +80,21 @@ public sealed class AzureDnsService
     // Zone discovery
     // -------------------------------------------------------------------------
 
-    /// <summary>Lists all DNS zones accessible to this credential.</summary>
+    /// <summary>Lists all DNS zones accessible to this credential (cached 10 min).</summary>
     public async Task<List<(string ZoneName, string ResourceGroup, string SubscriptionId)>> ListZonesAsync()
     {
         if (_zoneCache is not null && DateTimeOffset.UtcNow < _zoneCacheExpiry)
             return _zoneCache;
 
         _logger.LogInformation("Fetching DNS zones from subscription {Sub}...", _subscriptionId);
+
         var sub = _armClient.GetSubscriptionResource(
             SubscriptionResource.CreateResourceIdentifier(_subscriptionId));
 
         var zones = new List<(string, string, string)>();
         await foreach (var zone in sub.GetDnsZonesAsync())
         {
-            var rg = zone.Id.ResourceGroupName!;
-            zones.Add((zone.Data.Name, rg, _subscriptionId));
+            zones.Add((zone.Data.Name, zone.Id.ResourceGroupName!, _subscriptionId));
         }
 
         _logger.LogInformation("Found {Count} DNS zone(s).", zones.Count);
@@ -106,8 +104,8 @@ public sealed class AzureDnsService
     }
 
     /// <summary>
-    /// Returns the best-matching zone for <paramref name="domain"/> (longest-suffix match).
-    /// Returns null if no match found.
+    /// Returns the best-matching zone for <paramref name="domain"/> (longest-suffix match),
+    /// or null with a logged error if no match is found.
     /// </summary>
     public async Task<(string ZoneName, string ResourceGroup)?> FindZoneForDomainAsync(string domain)
     {
@@ -142,7 +140,7 @@ public sealed class AzureDnsService
     }
 
     // -------------------------------------------------------------------------
-    // Record helpers
+    // Helpers
     // -------------------------------------------------------------------------
 
     private static string RelativeName(string domain, string zone)
@@ -151,11 +149,11 @@ public sealed class AzureDnsService
         var zl = zone.ToLowerInvariant().TrimEnd('.');
         if (dl == zl) return "@";
         if (dl.EndsWith("." + zl, StringComparison.Ordinal))
-            return dl[..^(zl.Length + 1)]; // strip trailing ".zone"
+            return dl[..^(zl.Length + 1)];
         return dl;
     }
 
-    /// <summary>Replaces {{IP}} and {{DOMAIN}} placeholders.</summary>
+    /// <summary>Replaces {{IP}} and {{DOMAIN}} placeholders in a record-value template.</summary>
     public static string ResolvePlaceholders(string template, string ip, string domain)
         => template.Replace("{{IP}}", ip).Replace("{{DOMAIN}}", domain);
 
@@ -173,22 +171,29 @@ public sealed class AzureDnsService
         await foreach (var rs in zoneRes.GetAllRecordDataAsync())
         {
             var typeName = rs.ResourceType.Type.Split('/').Last().ToUpperInvariant();
-            if (typeName is not ("A" or "CNAME" or "MX")) continue;
+            string value;
 
-            var value = typeName switch
+            switch (typeName)
             {
-                "A" => string.Join(", ", rs.DnsARecords.Select(r => r.IPv4Address.ToString())),
-                "CNAME" => rs.DnsCnameRecord?.Cname ?? "",
-                "MX" => string.Join(", ", rs.DnsMxRecords.Select(r =>
-                    $"{r.Preference} {r.Exchange?.ToString() ?? ""}")),
-                _ => ""
-            };
+                case "A":
+                    value = string.Join(", ", rs.DnsARecords.Select(r => r.IPv4Address?.ToString() ?? ""));
+                    break;
+                case "CNAME":
+                    value = (rs.Cname ?? "").TrimEnd('.');
+                    break;
+                case "MX":
+                    value = string.Join(", ", rs.DnsMXRecords.Select(r =>
+                        $"{r.Preference} {(r.Exchange ?? "").TrimEnd('.')}"));
+                    break;
+                default:
+                    continue;
+            }
 
             results.Add(new LiveRecord
             {
                 Name = rs.Name ?? "@",
                 Type = typeName,
-                Value = value.TrimEnd('.'),
+                Value = value,
                 Ttl = rs.TtlInSeconds ?? _defaultTtl
             });
         }
@@ -217,7 +222,6 @@ public sealed class AzureDnsService
         if (zoneMatch is null)
         {
             result.Error = $"No Azure DNS zone found for domain '{domain}'.";
-            _logger.LogError("No zone found for domain '{Domain}'.", domain);
             return result;
         }
 
@@ -234,17 +238,15 @@ public sealed class AzureDnsService
             foreach (var (recordName, template) in recordSet)
             {
                 var desired = ResolvePlaceholders(template, ip, domain);
-                // For relative name within the zone
-                var relName = recordName == "@"
-                    ? RelativeName(domain, zoneName)
-                    : (recordName == "@" ? "@" : $"{recordName}");
-
-                // Fully resolve: if record name contains the domain, compute relative
-                if (relName.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
-                    relName = relName[..^(zoneName.Length + 1)];
+                var relName = recordName == "@" ? RelativeName(domain, zoneName) : recordName;
                 if (string.IsNullOrEmpty(relName)) relName = "@";
 
-                var rsr = new RecordSetResult { Name = relName == "@" ? domain : $"{relName}.{domain}", Type = rt, Value = desired };
+                var rsr = new RecordSetResult
+                {
+                    Name = relName == "@" ? domain : $"{relName}.{domain}",
+                    Type = rt,
+                    Value = desired
+                };
 
                 try
                 {
@@ -264,41 +266,25 @@ public sealed class AzureDnsService
         return result;
     }
 
-    private async Task UpsertRecordAsync(
-        DnsZoneResource zone,
-        string rt,
-        string relName,
-        string desired,
-        int ttl,
-        int mxPreference,
-        RecordSetResult rsr)
+    private Task UpsertRecordAsync(
+        DnsZoneResource zone, string rt, string relName, string desired,
+        int ttl, int mxPreference, RecordSetResult rsr) => rt switch
     {
-        switch (rt)
-        {
-            case "A":
-                await UpsertARecordAsync(zone, relName, desired, ttl, rsr);
-                break;
-            case "CNAME":
-                await UpsertCnameRecordAsync(zone, relName, desired, ttl, rsr);
-                break;
-            case "MX":
-                await UpsertMxRecordAsync(zone, relName, desired, ttl, mxPreference, rsr);
-                break;
-            default:
-                throw new ArgumentException($"Unsupported record type: {rt}");
-        }
-    }
+        "A"     => UpsertARecordAsync(zone, relName, desired, ttl, rsr),
+        "CNAME" => UpsertCnameRecordAsync(zone, relName, desired, ttl, rsr),
+        "MX"    => UpsertMxRecordAsync(zone, relName, desired, ttl, mxPreference, rsr),
+        _       => throw new ArgumentException($"Unsupported record type: {rt}")
+    };
 
-    private async Task UpsertARecordAsync(DnsZoneResource zone, string name, string ip, int ttl, RecordSetResult rsr)
+    private async Task UpsertARecordAsync(
+        DnsZoneResource zone, string name, string ip, int ttl, RecordSetResult rsr)
     {
-        var collection = zone.GetDnsARecordSets();
-        DnsARecordSetData data;
+        var collection = zone.GetDnsARecords();
 
-        // Check existing value
         try
         {
             var existing = await collection.GetAsync(name);
-            var existingIp = existing.Value.Data.DnsARecords.FirstOrDefault()?.IPv4Address.ToString();
+            var existingIp = existing.Value.Data.DnsARecords.FirstOrDefault()?.IPv4Address?.ToString();
             if (existingIp == ip)
             {
                 _logger.LogInformation("A {Name} already points to {Ip}; no update needed.", name, ip);
@@ -313,8 +299,8 @@ public sealed class AzureDnsService
             _logger.LogInformation("Creating A record {Name} -> {Ip}", name, ip);
         }
 
-        data = new DnsARecordSetData { TtlInSeconds = ttl };
-        data.DnsARecords.Add(new DnsARecordInfo { IPv4Address = System.Net.IPAddress.Parse(ip) });
+        var data = new DnsARecordData { TtlInSeconds = ttl };
+        data.DnsARecords.Add(new DnsARecordInfo { IPv4Address = IPAddress.Parse(ip) });
         await collection.CreateOrUpdateAsync(WaitUntil.Completed, name, data);
 
         rsr.Action = "updated";
@@ -322,14 +308,15 @@ public sealed class AzureDnsService
         _logger.LogInformation("  SET A {Name} -> {Ip} (TTL {Ttl})", name, ip, ttl);
     }
 
-    private async Task UpsertCnameRecordAsync(DnsZoneResource zone, string name, string target, int ttl, RecordSetResult rsr)
+    private async Task UpsertCnameRecordAsync(
+        DnsZoneResource zone, string name, string target, int ttl, RecordSetResult rsr)
     {
-        var collection = zone.GetDnsCnameRecordSets();
+        var collection = zone.GetDnsCnameRecords();
 
         try
         {
             var existing = await collection.GetAsync(name);
-            var existingTarget = existing.Value.Data.DnsCnameRecord?.Cname?.TrimEnd('.');
+            var existingTarget = (existing.Value.Data.Cname ?? "").TrimEnd('.');
             if (existingTarget == target.TrimEnd('.'))
             {
                 _logger.LogInformation("CNAME {Name} already points to {Target}; no update needed.", name, target);
@@ -344,7 +331,7 @@ public sealed class AzureDnsService
             _logger.LogInformation("Creating CNAME record {Name} -> {Target}", name, target);
         }
 
-        var data = new DnsCnameRecordSetData { TtlInSeconds = ttl, DnsCnameRecord = new DnsCnameRecordInfo { Cname = target } };
+        var data = new DnsCnameRecordData { Cname = target, TtlInSeconds = ttl };
         await collection.CreateOrUpdateAsync(WaitUntil.Completed, name, data);
 
         rsr.Action = "updated";
@@ -352,14 +339,15 @@ public sealed class AzureDnsService
         _logger.LogInformation("  SET CNAME {Name} -> {Target} (TTL {Ttl})", name, target, ttl);
     }
 
-    private async Task UpsertMxRecordAsync(DnsZoneResource zone, string name, string exchange, int ttl, int preference, RecordSetResult rsr)
+    private async Task UpsertMxRecordAsync(
+        DnsZoneResource zone, string name, string exchange, int ttl, int preference, RecordSetResult rsr)
     {
-        var collection = zone.GetDnsMxRecordSets();
+        var collection = zone.GetDnsMXRecords();
 
         try
         {
             var existing = await collection.GetAsync(name);
-            var existingExch = existing.Value.Data.DnsMxRecords.FirstOrDefault()?.Exchange?.ToString()?.TrimEnd('.');
+            var existingExch = (existing.Value.Data.DnsMXRecords.FirstOrDefault()?.Exchange ?? "").TrimEnd('.');
             if (existingExch == exchange.TrimEnd('.'))
             {
                 _logger.LogInformation("MX {Name} already points to {Exchange}; no update needed.", name, exchange);
@@ -374,8 +362,8 @@ public sealed class AzureDnsService
             _logger.LogInformation("Creating MX record {Name} -> {Exchange}", name, exchange);
         }
 
-        var data = new DnsMxRecordSetData { TtlInSeconds = ttl };
-        data.DnsMxRecords.Add(new DnsMxRecordInfo { Preference = preference, Exchange = new Azure.Core.DnsName(exchange) });
+        var data = new DnsMXRecordData { TtlInSeconds = ttl };
+        data.DnsMXRecords.Add(new DnsMXRecordInfo { Exchange = exchange, Preference = preference });
         await collection.CreateOrUpdateAsync(WaitUntil.Completed, name, data);
 
         rsr.Action = "updated";
@@ -384,27 +372,24 @@ public sealed class AzureDnsService
     }
 
     // -------------------------------------------------------------------------
-    // RBAC: ensure the service principal has DNS Zone Contributor
+    // RBAC: verify the service principal has DNS Zone Contributor
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Checks whether the configured service principal has the
-    /// <c>DNS Zone Contributor</c> role on the subscription.
-    /// Logs a warning if it is missing but does NOT throw — the caller
-    /// should decide whether to continue or abort.
+    /// Checks whether any role assignment on the subscription matches
+    /// <c>DNS Zone Contributor</c>. Logs a warning when missing but does NOT throw.
     /// </summary>
     public async Task VerifyRolesAsync()
     {
         try
         {
-            var sub = _armClient.GetSubscriptionResource(
-                SubscriptionResource.CreateResourceIdentifier(_subscriptionId));
-
+            var scope = new ResourceIdentifier($"/subscriptions/{_subscriptionId}");
             var roleDefId = new ResourceIdentifier(
                 $"/subscriptions/{_subscriptionId}/providers/Microsoft.Authorization/roleDefinitions/{DnsZoneContributorRoleId}");
 
             bool found = false;
-            await foreach (var assignment in sub.GetRoleAssignmentsAsync())
+            var assignments = _armClient.GetRoleAssignments(scope);
+            await foreach (var assignment in assignments.GetAllAsync())
             {
                 if (assignment.Data.RoleDefinitionId == roleDefId)
                 {
@@ -418,7 +403,7 @@ public sealed class AzureDnsService
             else
                 _logger.LogWarning(
                     "RBAC check: DNS Zone Contributor role NOT found on subscription {Sub}. " +
-                    "Run init.sh to assign it or ensure the principal has sufficient permissions.",
+                    "Run init.py to assign it, or ensure the principal has sufficient permissions.",
                     _subscriptionId);
         }
         catch (Exception ex)
@@ -427,3 +412,4 @@ public sealed class AzureDnsService
         }
     }
 }
+
