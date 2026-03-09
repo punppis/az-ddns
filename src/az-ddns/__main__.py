@@ -335,7 +335,8 @@ def run_init_checks(
             sp = create_service_principal(sub_id, resource_group, sp_name)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
-                "Failed during service principal creation for initialization."
+                "Failed during service principal creation for initialization: "
+                f"{exc}"
             ) from exc
         write_env_file(
             target_path,
