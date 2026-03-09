@@ -219,11 +219,11 @@ def select_dotenv_target(dotenv_paths: List[str]) -> str:
     return dotenv_paths[-1]
 
 
-def prompt_value(prompt: str, default: Optional[str] = None) -> str:
+def prompt_value(prompt: str, default: Optional[str] = None) -> Optional[str]:
     """Prompt for a value, returning the default when provided and empty."""
     suffix = f" [{default}]" if default else ""
     value = input(f"{prompt}{suffix}: ").strip()
-    return value or (default or "")
+    return value if value else default
 
 
 def prompt_required_value(
@@ -813,6 +813,7 @@ def run_once(
 
     new_state: dict = {}
     has_update_errors = False
+    failed_domains: List[str] = []
     for domain, domain_cfg in domains.items():
         log.info("Processing domain: %s", domain)
         domain_state, domain_has_errors = update_domain(
@@ -822,9 +823,12 @@ def run_once(
         )
         new_state[domain] = domain_state
         has_update_errors = has_update_errors or domain_has_errors
+        if domain_has_errors:
+            failed_domains.append(domain)
 
     if has_update_errors:
-        log.error("Update failed; skipping state save.")
+        failed_list = ", ".join(failed_domains) if failed_domains else "unknown"
+        log.error("Update failed for domain(s): %s; skipping state save.", failed_list)
         return
 
     config["state"] = new_state
