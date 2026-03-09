@@ -7,7 +7,6 @@
     <Nullable>enable</Nullable>
     <RootNamespace>AzDdns</RootNamespace>
     <AssemblyName>AzDdns</AssemblyName>
-    <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Optimize>true</Optimize>
   </PropertyGroup>
@@ -19,21 +18,20 @@
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http.AspNetCore" Version="2.0.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.0.0" />
     <!-- Azure SDK -->
-    <PackageReference Include="Azure.ResourceManager.Dns" Version="1.2.0" />
-    <PackageReference Include="Azure.ResourceManager" Version="1.13.0" />
+    <PackageReference Include="Azure.ResourceManager.Dns" Version="1.1.1" />
+    <PackageReference Include="Azure.ResourceManager" Version="1.13.2" />
+    <PackageReference Include="Azure.ResourceManager.Authorization" Version="1.1.6" />
     <PackageReference Include="Azure.Identity" Version="1.13.1" />
     <!-- Redis for distributed concurrency lock -->
     <PackageReference Include="StackExchange.Redis" Version="2.8.22" />
-    <!-- JSON -->
-    <PackageReference Include="System.Text.Json" Version="9.0.4" />
   </ItemGroup>
 
   <ItemGroup>
     <None Update="host.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="local.settings.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    <None Update="local.settings.json.example">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
       <CopyToPublishDirectory>Never</CopyToPublishDirectory>
     </None>
   </ItemGroup>

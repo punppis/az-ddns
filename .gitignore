@@ -3,3 +3,12 @@ state/
 __pycache__/
 *.pyc
 *.pyo
+
+# .NET build artifacts
+bin/
+obj/
+*.user
+.vs/
+
+# Azure Functions local secrets (copy from local.settings.json.example)
+local.settings.json
