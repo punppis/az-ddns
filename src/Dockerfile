@@ -1,8 +1,7 @@
 FROM mcr.microsoft.com/azure-cli:latest
 
-RUN tdnf install -y powershell && tdnf clean all
-
 WORKDIR /work
-COPY update-dns.ps1 /work/update-dns.ps1
+COPY az-ddns/ /work/az-ddns/
 
-ENTRYPOINT ["pwsh", "-NoProfile", "-File", "/work/update-dns.ps1"]
+# dns.json is mounted at /config/dns.json by the caller (see docker-compose.yml)
+ENTRYPOINT ["python3", "/work/az-ddns", "--config", "/config/dns.json"]

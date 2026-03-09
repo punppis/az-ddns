@@ -1,33 +1,165 @@
-## Configuration (Environment Variables)
+# az-ddns
 
-Scripts are located in `src/`. Use `init.ps1` to create a service principal and generate `.env` if it does not exist.
+Azure Dynamic DNS updater – keeps Azure DNS A (and optionally CNAME / MX) records in sync with your current public IP.
 
-### Quick start
-1. Run `./init.ps1` and follow prompts (creates `.env` if missing).
-2. Run `docker compose up --build`.
+Written in Python 3, runs on **Windows, Linux, and macOS**.
 
-### Required (Azure auth)
-- `AZURE_TENANT_ID`
-- `AZURE_CLIENT_ID`
-- `AZURE_SUBSCRIPTION_ID`
-- `AZURE_CLIENT_SECRET` **or** `AZURE_CLIENT_SECRET_FILE` (Docker secrets path)
+---
 
-### Required (DNS behavior)
-- `AZURE_RESOURCE_GROUP` — resource group that contains the Azure DNS zones
-- `DNS_MX_TARGET` — MX exchange to ensure at `@`
-- `DNS_CNAME_TARGET` — CNAME value to ensure at `*`
+## Quick start
 
-### Optional
-- `DNS_A_TARGET` — static IPv4 for `A(@)`. If set, script does not perform public IP lookup.
-- `IP_STATE_FILE` — path to store last desired IP (optional; recommended for efficiency)
-- `INTERVAL_SECONDS` (default `300`)
-- `TTL` (default `3600`)
-- `MX_PREFERENCE` (default `10`)
-- `FORCE_MX`, `FORCE_CNAME` (`true/1`)
-- `BLACKLIST_ZONES` (comma-separated)
-- `IP_SERVICES` (comma-separated URLs)
-- `RUN_ONCE` (`true/1`) to run once and exit (otherwise loops forever)
+### 1. Create a service principal (one-time)
 
-## A record policy
-The script enforces `A(@)` to equal the desired IPv4 (static from `DNS_A_TARGET` or dynamic public IP).
-If the existing A record differs, is missing, or has multiple values, it is replaced with a single value.
+```powershell
+./init.ps1 -SubscriptionId <sub-id>
+```
+
+This creates a `DNS Zone Contributor` service principal and prints its credentials.
+
+### 2. Create your config file
+
+```bash
+python3 src/az-ddns --init --config dns.json
+```
+
+Edit `dns.json` to list the domains you want to manage:
+
+```json
+{
+    "lastUpdate": "",
+    "domains": {
+        "office.kitkagames.com": {
+            "A":     { "@": "{{IP}}" },
+            "CNAME": { "*": "{{DOMAIN}}" }
+        },
+        "smb.kitkagames.com": {
+            "A":     { "@": "{{IP}}" },
+            "MX":    { "@": "mail.kitkagames.com" }
+        }
+    },
+    "state": {}
+}
+```
+
+**Placeholders**
+
+| Placeholder   | Replaced with                                    |
+|---------------|--------------------------------------------------|
+| `{{IP}}`      | Current public IPv4 address                      |
+| `{{DOMAIN}}`  | The domain name currently being processed        |
+
+**Supported record types:** `A`, `CNAME`, `MX`
+
+### 3. Run
+
+```bash
+# Run once
+python3 src/az-ddns --config dns.json --once
+
+# Loop forever (15-minute interval)
+python3 src/az-ddns --config dns.json
+
+# With Docker Compose
+docker compose up --build
+```
+
+---
+
+## Configuration
+
+### Azure credentials (environment variables)
+
+| Variable                    | Required | Description                                            |
+|-----------------------------|----------|--------------------------------------------------------|
+| `AZURE_TENANT_ID`           | Yes      | Azure AD tenant ID                                     |
+| `AZURE_CLIENT_ID`           | Yes      | Service principal application (client) ID              |
+| `AZURE_SUBSCRIPTION_ID`     | Yes      | Azure subscription ID                                  |
+| `AZURE_CLIENT_SECRET`       | Yes*     | Service principal secret (plain text)                  |
+| `AZURE_CLIENT_SECRET_FILE`  | Yes*     | Path to a file containing the secret (Docker secrets)  |
+
+\* Provide exactly one of `AZURE_CLIENT_SECRET` or `AZURE_CLIENT_SECRET_FILE`.
+
+### CLI flags
+
+```
+python3 az-ddns --help
+
+  --config PATH         Path to dns.json config file (required)
+  --once                Run one cycle and exit
+  --init                Write a sample config to --config path and exit
+  --force               Force-update every record ignoring cached state
+  --interval SECONDS    Seconds between update cycles (default: 900)
+  --ttl SECONDS         DNS record TTL (default: 3600)
+  --mx-preference N     MX preference value (default: 10)
+  --log-level LEVEL     DEBUG / INFO / WARNING / ERROR (default: INFO)
+```
+
+---
+
+## Config file (`dns.json`)
+
+The config file is both the **input** (domain/record configuration) and the
+**state store** (last-known values written back after each successful update).
+
+```json
+{
+    "lastUpdate": "2024-06-01T12:00:00Z",
+    "domains": {
+        "office.kitkagames.com": {
+            "A":     { "@":  "{{IP}}" },
+            "CNAME": { "*":  "{{DOMAIN}}" },
+            "MX":    { "@":  "mail.kitkagames.com" }
+        }
+    },
+    "state": {
+        "office.kitkagames.com": {
+            "A":     { "@":  "12.3.4.5" },
+            "CNAME": { "*":  "office.kitkagames.com" },
+            "MX":    { "@":  "mail.kitkagames.com" }
+        }
+    }
+}
+```
+
+The `state` section is managed automatically – do not edit it manually.
+
+---
+
+## Behaviour
+
+| Condition                               | Action                                              |
+|-----------------------------------------|-----------------------------------------------------|
+| First run (`state` is empty)            | Login to Azure, update every configured record      |
+| IP **changed** since last run           | Login to Azure, update every configured record      |
+| ≥ 12 h since last successful update    | Login to Azure, do a full verification + update     |
+| IP **unchanged**, < 12 h elapsed       | Resolve A records via system DNS; skip az CLI if OK |
+| `--force` flag                          | Login to Azure, overwrite every record unconditionally |
+
+The script also automatically discovers the Azure DNS zone and resource group
+for each domain via `az network dns zone list`, so no `AZURE_RESOURCE_GROUP`
+variable is needed.
+
+---
+
+## Docker Compose
+
+Copy `.env.example` to `.env` and fill in your credentials, then:
+
+```bash
+docker compose up --build
+```
+
+`dns.json` is mounted into the container at `/config/dns.json` and is written
+back with updated state after each cycle.
+
+---
+
+## Azure zone discovery
+
+For a domain entry like `"office.kitkagames.com"` the script lists all Azure
+DNS zones visible to the service principal and picks the **longest-suffix
+match**.  This means:
+
+* If `office.kitkagames.com` is its own Azure DNS zone, it is used directly.
+* If only `kitkagames.com` exists as a zone, that zone is used and the records
+  are updated within it.
