@@ -2,6 +2,7 @@ using Azure.Identity;
 using Azure.ResourceManager;
 using Azure.ResourceManager.Dns;
 using Azure.ResourceManager.Dns.Models;
+using Azure.ResourceManager.Resources;
 
 namespace AzDdns.Services;
 
@@ -15,7 +16,9 @@ public class AzureDnsService
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger<AzureDnsService> _logger;
+    // Lazily initialised on first use so startup is not blocked
     private ArmClient? _armClient;
+    private string? _resolvedSubscriptionId;
     private List<ZoneInfo>? _zonesCache;
     private DateTime _zonesCacheExpiry = DateTime.MinValue;
 
@@ -25,29 +28,54 @@ public class AzureDnsService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Returns the ARM client, always using <see cref="DefaultAzureCredential"/>.
+    /// On an Azure VM with a managed identity assigned this requires no additional
+    /// configuration. When running locally, <c>az login</c> or env vars are used.
+    /// </summary>
     private ArmClient GetClient()
     {
         if (_armClient is not null)
             return _armClient;
 
-        var tenantId = _configuration["AZURE_TENANT_ID"];
-        var clientId = _configuration["AZURE_CLIENT_ID"];
-        var clientSecret = _configuration["AZURE_CLIENT_SECRET"];
-
-        Azure.Core.TokenCredential credential;
-        if (!string.IsNullOrWhiteSpace(clientSecret) && !string.IsNullOrWhiteSpace(tenantId) && !string.IsNullOrWhiteSpace(clientId))
-        {
-            _logger.LogInformation("Using ClientSecretCredential for Azure DNS");
-            credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
-        }
-        else
-        {
-            _logger.LogInformation("Using DefaultAzureCredential for Azure DNS");
-            credential = new DefaultAzureCredential();
-        }
-
-        _armClient = new ArmClient(credential);
+        _logger.LogInformation("Using DefaultAzureCredential for Azure DNS");
+        _armClient = new ArmClient(new DefaultAzureCredential());
         return _armClient;
+    }
+
+    /// <summary>
+    /// Returns the subscription ID to use. If <c>AZURE_SUBSCRIPTION_ID</c> is set
+    /// in configuration it is used as-is. Otherwise the first subscription returned
+    /// by the ARM API is used (convenient on a single-subscription managed identity).
+    /// </summary>
+    private async Task<string> GetSubscriptionIdAsync()
+    {
+        if (_resolvedSubscriptionId is not null)
+            return _resolvedSubscriptionId;
+
+        var configured = _configuration["AZURE_SUBSCRIPTION_ID"];
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            _resolvedSubscriptionId = configured;
+            return _resolvedSubscriptionId;
+        }
+
+        _logger.LogInformation("AZURE_SUBSCRIPTION_ID not set — auto-discovering from ARM...");
+        var client = GetClient();
+        await foreach (var sub in client.GetSubscriptions().GetAllAsync())
+        {
+            _resolvedSubscriptionId = sub.Data.SubscriptionId;
+            _logger.LogInformation("Auto-discovered subscription: {Name} ({Id})",
+                sub.Data.DisplayName, _resolvedSubscriptionId);
+            break;
+        }
+
+        if (_resolvedSubscriptionId is null)
+            throw new InvalidOperationException(
+                "Could not determine Azure subscription. " +
+                "Set AZURE_SUBSCRIPTION_ID or ensure the managed identity has at least one subscription visible.");
+
+        return _resolvedSubscriptionId;
     }
 
     public async Task<List<ZoneInfo>> ListZonesAsync()
@@ -55,10 +83,7 @@ public class AzureDnsService
         if (_zonesCache is not null && DateTime.UtcNow < _zonesCacheExpiry)
             return _zonesCache;
 
-        var subscriptionId = _configuration["AZURE_SUBSCRIPTION_ID"];
-        if (string.IsNullOrWhiteSpace(subscriptionId))
-            throw new InvalidOperationException("AZURE_SUBSCRIPTION_ID is not configured.");
-
+        var subscriptionId = await GetSubscriptionIdAsync();
         var client = GetClient();
         var subscription = await client.GetSubscriptionResource(
             new Azure.Core.ResourceIdentifier($"/subscriptions/{subscriptionId}")).GetAsync();
@@ -78,15 +103,10 @@ public class AzureDnsService
 
     public async Task<string?> GetARecordAsync(string zoneName, string resourceGroup)
     {
-        var subscriptionId = _configuration["AZURE_SUBSCRIPTION_ID"];
-        if (string.IsNullOrWhiteSpace(subscriptionId))
-            throw new InvalidOperationException("AZURE_SUBSCRIPTION_ID is not configured.");
-
+        var subscriptionId = await GetSubscriptionIdAsync();
         try
         {
             var client = GetClient();
-            var zoneId = DnsZoneResource.CreateResourceIdentifier(subscriptionId, resourceGroup, zoneName);
-            var zone = client.GetDnsZoneResource(zoneId);
             var recordSetId = DnsARecordResource.CreateResourceIdentifier(subscriptionId, resourceGroup, zoneName, "@");
             var recordSet = client.GetDnsARecordResource(recordSetId);
             var response = await recordSet.GetAsync();
@@ -100,23 +120,14 @@ public class AzureDnsService
 
     public async Task SetARecordAsync(string zoneName, string resourceGroup, string ip, int ttl)
     {
-        var subscriptionId = _configuration["AZURE_SUBSCRIPTION_ID"];
-        if (string.IsNullOrWhiteSpace(subscriptionId))
-            throw new InvalidOperationException("AZURE_SUBSCRIPTION_ID is not configured.");
-
+        var subscriptionId = await GetSubscriptionIdAsync();
         var client = GetClient();
         var zoneId = DnsZoneResource.CreateResourceIdentifier(subscriptionId, resourceGroup, zoneName);
         var zone = client.GetDnsZoneResource(zoneId);
         var records = zone.GetDnsARecords();
 
-        var data = new DnsARecordData
-        {
-            TtlInSeconds = ttl
-        };
-        data.DnsARecords.Add(new Azure.ResourceManager.Dns.Models.DnsARecordInfo
-        {
-            IPv4Address = System.Net.IPAddress.Parse(ip)
-        });
+        var data = new DnsARecordData { TtlInSeconds = ttl };
+        data.DnsARecords.Add(new DnsARecordInfo { IPv4Address = System.Net.IPAddress.Parse(ip) });
 
         await records.CreateOrUpdateAsync(Azure.WaitUntil.Completed, "@", data);
         _logger.LogInformation("Set A record for {Zone} apex to {Ip} (TTL {Ttl})", zoneName, ip, ttl);

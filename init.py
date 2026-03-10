@@ -18,10 +18,10 @@ What it does (all steps are idempotent — safe to re-run):
   3.  Lists your subscriptions and lets you choose one.
   4.  Selects or creates the Azure resource group
       (default: dynamic-dns; created if absent).
-  5.  Looks for an existing service principal named 'az-ddns-sp';
-      creates one if it is missing (used for Azure DNS ARM operations).
-  6.  Assigns the 'DNS Zone Contributor' role on the subscription
-      to the SP if that assignment does not already exist.
+  5.  (Skipped with --managed-identity) Looks for an existing service principal
+      named 'az-ddns-sp'; creates one if missing (used for DNS ARM operations).
+  6.  (Skipped with --managed-identity) Assigns the 'DNS Zone Contributor' role
+      on the subscription to the SP if that assignment does not already exist.
   7.  Generates a secure random DDNS token (X-DDNS-TOKEN API secret).
   8.  Creates (or reuses) an Azure AD app registration for the web GUI
       OIDC login — skippable; GUI falls back to API-only mode.
@@ -31,10 +31,17 @@ What it does (all steps are idempotent — safe to re-run):
       have already set).
   11. Starts the container: docker compose up -d --build
 
+Managed-identity mode (recommended for Azure VMs):
+    python3 init.py --managed-identity
+    No service principal or client secret is created. The container uses the
+    VM's managed identity to authenticate to Azure DNS at runtime. Only
+    DDNS_TOKEN (and optionally AZURE_SUBSCRIPTION_ID) are written to .env.
+
 Usage:
-    python3 init.py                   # normal interactive run
-    python3 init.py --force-new-sp    # delete & recreate the service principal
-    python3 init.py --sp-name mysp    # use a custom SP display name
+    python3 init.py                    # normal interactive run (creates SP)
+    python3 init.py --managed-identity # VM / managed-identity run (no SP)
+    python3 init.py --force-new-sp     # delete & recreate the service principal
+    python3 init.py --sp-name mysp     # use a custom SP display name
 """
 
 from __future__ import annotations
@@ -614,64 +621,78 @@ def run(args: argparse.Namespace) -> None:
             warn("Invalid selection -- try again.")
 
     # ------------------------------------------------------------------
-    # 5. Service principal
+    # 5. Service principal (skipped in managed-identity mode)
     # ------------------------------------------------------------------
     step("5/11  Service principal")
     sp_client_secret: str = ""
     sp_client_id: str = ""
 
-    if args.force_new_sp:
+    if args.managed_identity:
+        ok("--managed-identity: skipping service principal — VM managed identity will be used at runtime.")
+    elif args.force_new_sp:
         existing_sp = get_sp_by_name(sp_name)
         if existing_sp:
             info(f"--force-new-sp: deleting existing SP '{sp_name}'...")
             delete_sp(existing_sp["appId"])
             ok("Existing SP deleted.")
         existing_sp = None
-    else:
-        existing_sp = get_sp_by_name(sp_name)
-
-    if existing_sp:
-        sp_client_id = existing_sp.get("appId", "")
-        ok(f"Found existing SP '{sp_name}' (appId={sp_client_id}).")
-
-        sp_client_secret = existing_env.get("AZURE_CLIENT_SECRET", "")
-        if sp_client_secret:
-            ok("Client secret loaded from existing .env.")
-        else:
-            warn(
-                "Existing SP found but no client secret in .env.\n"
-                "         Either set AZURE_CLIENT_SECRET in .env manually,\n"
-                "         or re-run with --force-new-sp to create a fresh SP."
-            )
-            new_secret = prompt("Paste the existing client secret (leave blank to skip)")
-            if new_secret:
-                sp_client_secret = new_secret
-    else:
         info(f"Creating service principal '{sp_name}' with role '{DNS_ZONE_CONTRIBUTOR_ROLE}'...")
         sp_creds = create_sp(sp_name, subscription_id)
         sp_client_id     = sp_creds["appId"]
         sp_client_secret = sp_creds["password"]
         tenant_id        = sp_creds.get("tenant", tenant_id)
         ok(f"SP created (appId={sp_client_id}).")
+    else:
+        existing_sp = get_sp_by_name(sp_name)
+        if existing_sp:
+            sp_client_id = existing_sp.get("appId", "")
+            ok(f"Found existing SP '{sp_name}' (appId={sp_client_id}).")
+
+            sp_client_secret = existing_env.get("AZURE_CLIENT_SECRET", "")
+            if sp_client_secret:
+                ok("Client secret loaded from existing .env.")
+            else:
+                warn(
+                    "Existing SP found but no client secret in .env.\n"
+                    "         Either set AZURE_CLIENT_SECRET in .env manually,\n"
+                    "         or re-run with --force-new-sp to create a fresh SP.\n"
+                    "         Or re-run with --managed-identity to skip SP entirely."
+                )
+                new_secret = prompt("Paste the existing client secret (leave blank to skip)")
+                if new_secret:
+                    sp_client_secret = new_secret
+        else:
+            info(f"Creating service principal '{sp_name}' with role '{DNS_ZONE_CONTRIBUTOR_ROLE}'...")
+            sp_creds = create_sp(sp_name, subscription_id)
+            sp_client_id     = sp_creds["appId"]
+            sp_client_secret = sp_creds["password"]
+            tenant_id        = sp_creds.get("tenant", tenant_id)
+            ok(f"SP created (appId={sp_client_id}).")
 
     # ------------------------------------------------------------------
-    # 7. Role assignment check
+    # 6. Role assignment (skipped in managed-identity mode)
     # ------------------------------------------------------------------
     step("6/11  RBAC -- DNS Zone Contributor")
-    sp_object_id = get_sp_object_id(sp_client_id)
-    if sp_object_id:
-        assignments = get_role_assignments(sp_object_id, subscription_id)
-        if assignments:
-            ok(f"'{DNS_ZONE_CONTRIBUTOR_ROLE}' role is already assigned.")
+    if args.managed_identity:
+        ok("--managed-identity: skipping RBAC assignment.")
+        info("Ensure the VM's managed identity has 'DNS Zone Contributor' on the subscription.")
+    elif sp_client_id:
+        sp_object_id = get_sp_object_id(sp_client_id)
+        if sp_object_id:
+            assignments = get_role_assignments(sp_object_id, subscription_id)
+            if assignments:
+                ok(f"'{DNS_ZONE_CONTRIBUTOR_ROLE}' role is already assigned.")
+            else:
+                info(f"Assigning '{DNS_ZONE_CONTRIBUTOR_ROLE}' to SP on subscription...")
+                try:
+                    assign_role(sp_object_id, subscription_id)
+                    ok("Role assigned.")
+                except subprocess.CalledProcessError as exc:
+                    warn(f"Role assignment failed (you may need Owner/User Access Admin):\n{exc.stderr}")
         else:
-            info(f"Assigning '{DNS_ZONE_CONTRIBUTOR_ROLE}' to SP on subscription...")
-            try:
-                assign_role(sp_object_id, subscription_id)
-                ok("Role assigned.")
-            except subprocess.CalledProcessError as exc:
-                warn(f"Role assignment failed (you may need Owner/User Access Admin):\n{exc.stderr}")
+            warn("Could not retrieve SP object ID; skipping role check.")
     else:
-        warn("Could not retrieve SP object ID; skipping role check.")
+        warn("No service principal configured; skipping RBAC check.")
 
     # ------------------------------------------------------------------
     # 8. DDNS token
@@ -805,17 +826,25 @@ def run(args: argparse.Namespace) -> None:
     step("10/11  Write configuration files")
 
     env_values: dict[str, str] = {
-        "AZURE_TENANT_ID":       tenant_id,
-        "AZURE_CLIENT_ID":       sp_client_id,
-        "AZURE_SUBSCRIPTION_ID": subscription_id,
         "DDNS_TOKEN":            ddns_token,
+        "AZURE_SUBSCRIPTION_ID": subscription_id,
     }
     env_comments: dict[str, str] = {
-        "AZURE_TENANT_ID":       "Azure AD tenant ID",
-        "AZURE_CLIENT_ID":       "Service principal application (client) ID",
-        "AZURE_SUBSCRIPTION_ID": "Azure subscription ID",
         "DDNS_TOKEN":            "Secret token required in X-DDNS-TOKEN request header",
+        "AZURE_SUBSCRIPTION_ID": "Azure subscription ID (optional — auto-discovered from managed identity if omitted)",
     }
+
+    if not args.managed_identity:
+        # SP-based auth — write credential vars
+        if tenant_id:
+            env_values["AZURE_TENANT_ID"] = tenant_id
+            env_comments["AZURE_TENANT_ID"] = "Azure AD tenant ID"
+        if sp_client_id:
+            env_values["AZURE_CLIENT_ID"] = sp_client_id
+            env_comments["AZURE_CLIENT_ID"] = "Service principal application (client) ID"
+        if sp_client_secret:
+            env_values["AZURE_CLIENT_SECRET"] = sp_client_secret
+            env_comments["AZURE_CLIENT_SECRET"] = "Service principal client secret"
 
     if resource_group_name:
         env_values["AZURE_RESOURCE_GROUP"] = resource_group_name
@@ -823,9 +852,6 @@ def run(args: argparse.Namespace) -> None:
     if location:
         env_values["AZURE_LOCATION"] = location
         env_comments["AZURE_LOCATION"] = "Azure region used for az-ddns resources"
-    if sp_client_secret:
-        env_values["AZURE_CLIENT_SECRET"] = sp_client_secret
-        env_comments["AZURE_CLIENT_SECRET"] = "Service principal client secret (for DNS ARM operations)"
     if app_client_id:
         env_values["AZURE_APP_CLIENT_ID"] = app_client_id
         env_comments["AZURE_APP_CLIENT_ID"] = "Azure AD app registration client ID (GUI OIDC login)"
@@ -877,8 +903,11 @@ def run(args: argparse.Namespace) -> None:
     print(f"  Tenant ID       : {tenant_id}")
     print(f"  Resource group  : {resource_group_name or '<not set>'}")
     print(f"  Location        : {location or '<not set>'}")
-    print(f"  Client ID (SP)  : {sp_client_id}")
-    print(f"  Client secret   : {'<set>' if sp_client_secret else '<NOT SET -- edit .env>'}")
+    if args.managed_identity:
+        print(f"  Auth mode       : Managed Identity (no service principal)")
+    else:
+        print(f"  Client ID (SP)  : {sp_client_id or '<not set>'}")
+        print(f"  Client secret   : {'<set>' if sp_client_secret else '<NOT SET>'}")
     print(f"  DDNS token      : {ddns_token[:8]}...  (stored in .env)")
     print(f"  GUI app reg     : {app_client_id or '<not configured -- API-only mode>'}")
     print(f"  dns.json        : {DNS_JSON_FILE if DNS_JSON_FILE.exists() else '<not created>'}")
@@ -888,11 +917,12 @@ def run(args: argparse.Namespace) -> None:
     print(f"               -H 'X-DDNS-TOKEN: {ddns_token[:8]}...' -H 'Content-Type: application/json'")
     print("               -d '{}'")
     print()
-    if not sp_client_secret:
+    if not args.managed_identity and not sp_client_secret:
         warn("AZURE_CLIENT_SECRET is not set in .env.")
         warn("If you already have the secret, add it manually:")
         warn(f"  echo 'AZURE_CLIENT_SECRET=<secret>' >> {ENV_FILE}")
         warn("Or re-run with --force-new-sp to generate a new SP and secret.")
+        warn("Or re-run with --managed-identity if running on an Azure VM.")
     print()
 
 
@@ -903,8 +933,18 @@ def main() -> None:
         epilog=(
             "Examples:\n"
             "  python3 init.py\n"
+            "  python3 init.py --managed-identity\n"
             "  python3 init.py --sp-name my-ddns-sp\n"
             "  python3 init.py --force-new-sp\n"
+        ),
+    )
+    parser.add_argument(
+        "--managed-identity",
+        action="store_true",
+        help=(
+            "Skip service principal and RBAC steps. "
+            "Use this when running on an Azure VM with a managed identity "
+            "that already has DNS Zone Contributor on the subscription."
         ),
     )
     parser.add_argument(
@@ -919,6 +959,9 @@ def main() -> None:
         help="Delete and recreate the service principal (generates a fresh secret)",
     )
     args = parser.parse_args()
+    # --managed-identity and --force-new-sp are mutually exclusive
+    if args.managed_identity and args.force_new_sp:
+        parser.error("--managed-identity and --force-new-sp are mutually exclusive.")
     run(args)
 
 

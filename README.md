@@ -34,6 +34,16 @@ bash init.sh
 
 The bootstrap scripts install any missing tools (Python 3, Azure CLI, Docker, .NET 10 SDK), then launch `init.py` for interactive Azure provisioning.
 
+#### On an Azure VM with a managed identity (recommended)
+
+```bash
+python3 init.py --managed-identity
+```
+
+This skips service principal creation and RBAC assignment entirely. The container uses the VM's [managed identity](https://learn.microsoft.com/en-us/azure/active-directory/managed-identities-azure-resources/overview) to authenticate to Azure DNS at runtime. Ensure the VM's identity has **DNS Zone Contributor** assigned on the subscription before running.
+
+#### On a local machine or without a managed identity
+
 `init.py` guides you through:
 1. Azure login
 2. Subscription selection
@@ -164,20 +174,33 @@ Returns the current in-memory cache for all managed domains.
 
 All configuration is via environment variables (loaded from `.env` by `init.py`, and mounted via `docker-compose.yml`).
 
-| Variable                | Required | Description |
-|-------------------------|----------|-------------|
-| `AZURE_TENANT_ID`       | Yes      | Azure AD tenant ID |
-| `AZURE_CLIENT_ID`       | Yes      | Service principal client ID (DNS ARM operations) |
-| `AZURE_CLIENT_SECRET`   | Yes*     | Service principal secret (`DefaultAzureCredential` used if absent) |
-| `AZURE_SUBSCRIPTION_ID` | Yes      | Azure subscription ID |
-| `DDNS_TOKEN`            | Yes      | Secret for `X-DDNS-TOKEN` API header |
-| `AZURE_APP_CLIENT_ID`   | No       | App registration client ID (enables GUI OIDC login) |
-| `AZURE_APP_CLIENT_SECRET` | No     | App registration client secret |
-| `DNS_POLL_INTERVAL`     | No       | Background poll interval in seconds (default: `1800`) |
-| `DNS_TTL`               | No       | DNS A record TTL in seconds (default: `3600`) |
-| `DATA_PATH`             | No       | Path to `dns.json` and `state.json` (default: `/data` in container, `.` locally) |
+### Minimal configuration (managed identity on Azure VM)
 
-\* Omit `AZURE_CLIENT_SECRET` to use `DefaultAzureCredential` (e.g. `az login` locally, managed identity in Azure).
+On an Azure VM with a system-assigned managed identity that has **DNS Zone Contributor** on the subscription, only two variables are needed:
+
+```
+DDNS_TOKEN=<random-secret>
+```
+
+`AZURE_SUBSCRIPTION_ID` is auto-discovered from the first subscription visible to the managed identity if not set.
+
+### Full variable reference
+
+| Variable                  | Required | Description |
+|---------------------------|----------|-------------|
+| `DDNS_TOKEN`              | **Yes**  | Secret for `X-DDNS-TOKEN` API header |
+| `AZURE_SUBSCRIPTION_ID`   | No†      | Azure subscription ID (auto-discovered when using managed identity) |
+| `AZURE_TENANT_ID`         | No*      | Azure AD tenant ID |
+| `AZURE_CLIENT_ID`         | No*      | Service principal client ID |
+| `AZURE_CLIENT_SECRET`     | No*      | Service principal client secret |
+| `AZURE_APP_CLIENT_ID`     | No       | App registration client ID (enables GUI OIDC login) |
+| `AZURE_APP_CLIENT_SECRET` | No       | App registration client secret |
+| `DNS_POLL_INTERVAL`       | No       | Background poll interval in seconds (default: `1800`) |
+| `DNS_TTL`                 | No       | DNS A record TTL in seconds (default: `3600`) |
+| `DATA_PATH`               | No       | Path to `dns.json` and `state.json` (default: `/data` in container, `.` locally) |
+
+\* When `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` are all absent, `DefaultAzureCredential` is used — which picks up the VM's managed identity automatically.  
+† `AZURE_SUBSCRIPTION_ID` is strongly recommended when a VM has access to multiple subscriptions.
 
 ---
 
