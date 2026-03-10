@@ -14,7 +14,8 @@ public class DnsCache
     public DnsCache(IConfiguration configuration, ILogger<DnsCache> logger)
     {
         _logger = logger;
-        var dataPath = configuration["DATA_PATH"] ?? "/data";
+        var isContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") == "true";
+        var dataPath = configuration["DATA_PATH"] ?? (isContainer ? "/data" : ".");
         _statePath = Path.Combine(dataPath, "state.json");
         LoadFromDisk();
     }

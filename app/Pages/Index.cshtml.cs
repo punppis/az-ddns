@@ -9,7 +9,7 @@ public class IndexModel : PageModel
 {
     private readonly DnsCache _cache;
     private readonly DnsConfigStore _configStore;
-    private readonly AzureDnsService _dnsService;
+    private readonly DnsUpdateService _updateService;
     private readonly IConfiguration _configuration;
 
     public bool GuiAuthEnabled { get; private set; }
@@ -18,12 +18,12 @@ public class IndexModel : PageModel
     public IndexModel(
         DnsCache cache,
         DnsConfigStore configStore,
-        AzureDnsService dnsService,
+        DnsUpdateService updateService,
         IConfiguration configuration)
     {
         _cache = cache;
         _configStore = configStore;
-        _dnsService = dnsService;
+        _updateService = updateService;
         _configuration = configuration;
     }
 
@@ -51,55 +51,10 @@ public class IndexModel : PageModel
             return Page();
         }
 
-        var defaultTtl = int.TryParse(_configuration["DNS_TTL"], out var ttl) ? ttl : 3600;
+        var (_, _, results) = await _updateService.UpdateAllAsync(ip);
 
-        var domains = _configStore.GetManagedDomains();
-        var updated = 0;
-        var errors = new List<string>();
-
-        foreach (var domain in domains)
-        {
-            try
-            {
-                var zone = await _dnsService.FindZoneForDomainAsync(domain);
-                if (zone is null)
-                {
-                    errors.Add($"{domain}: no matching Azure DNS zone");
-                    continue;
-                }
-
-                var existing = _cache.Get(domain);
-                if (existing?.CurrentIp == ip)
-                    continue;
-
-                await _dnsService.SetARecordAsync(zone.Name, zone.ResourceGroup, ip, defaultTtl);
-
-                _cache.Upsert(new DomainEntry
-                {
-                    Domain = domain,
-                    CurrentIp = ip,
-                    Ttl = defaultTtl,
-                    LastFetched = DateTime.UtcNow,
-                    LastUpdated = DateTime.UtcNow,
-                    Error = null
-                });
-                updated++;
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"{domain}: {ex.Message}");
-                var existing = _cache.Get(domain);
-                _cache.Upsert(new DomainEntry
-                {
-                    Domain = domain,
-                    CurrentIp = existing?.CurrentIp,
-                    Ttl = existing?.Ttl ?? defaultTtl,
-                    LastFetched = existing?.LastFetched,
-                    LastUpdated = existing?.LastUpdated,
-                    Error = ex.Message
-                });
-            }
-        }
+        var updated = results.Count(r => r.Action == "updated");
+        var errors  = results.Where(r => r.Action == "error").Select(r => $"{r.Domain}: {r.Error}").ToList();
 
         if (errors.Count > 0)
             TempData["UpdateError"] = $"Updated {updated} domain(s) with {errors.Count} error(s): {string.Join("; ", errors)}";

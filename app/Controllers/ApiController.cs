@@ -25,13 +25,24 @@ public class DdnsTokenAttribute : ActionFilterAttribute
         var expectedBytes = Encoding.UTF8.GetBytes(expectedToken);
         var providedBytes = Encoding.UTF8.GetBytes(providedToken);
 
-        // Pad to equal length so FixedTimeEquals can run without throwing on length mismatch
-        if (providedBytes.Length != expectedBytes.Length)
+        // Pad both arrays to the same length so FixedTimeEquals always runs in
+        // time proportional to the *expected* token, not the provided one.
+        byte[] a = expectedBytes;
+        byte[] b;
+        if (providedBytes.Length == expectedBytes.Length)
         {
-            // Token length differs — still run a dummy comparison to avoid timing leaks
-            CryptographicOperations.FixedTimeEquals(expectedBytes, expectedBytes);
+            b = providedBytes;
         }
-        else if (CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes) && expectedToken.Length > 0)
+        else
+        {
+            // Create a copy padded/trimmed to the expected length so we always
+            // compare exactly expectedBytes.Length bytes.
+            b = new byte[expectedBytes.Length];
+            var copyLen = Math.Min(providedBytes.Length, expectedBytes.Length);
+            Buffer.BlockCopy(providedBytes, 0, b, 0, copyLen);
+        }
+
+        if (CryptographicOperations.FixedTimeEquals(a, b) && expectedToken.Length > 0)
         {
             // Token matched — allow request
             return;
@@ -56,22 +67,16 @@ public class DdnsTokenAttribute : ActionFilterAttribute
 public class ApiController : ControllerBase
 {
     private readonly DnsCache _cache;
-    private readonly DnsConfigStore _configStore;
-    private readonly AzureDnsService _dnsService;
-    private readonly IConfiguration _configuration;
+    private readonly DnsUpdateService _updateService;
     private readonly ILogger<ApiController> _logger;
 
     public ApiController(
         DnsCache cache,
-        DnsConfigStore configStore,
-        AzureDnsService dnsService,
-        IConfiguration configuration,
+        DnsUpdateService updateService,
         ILogger<ApiController> logger)
     {
         _cache = cache;
-        _configStore = configStore;
-        _dnsService = dnsService;
-        _configuration = configuration;
+        _updateService = updateService;
         _logger = logger;
     }
 
@@ -102,56 +107,7 @@ public class ApiController : ControllerBase
                 return BadRequest(new { error = "Could not determine caller IP and none was provided." });
         }
 
-        var defaultTtl = int.TryParse(_configuration["DNS_TTL"], out var ttl) ? ttl : 3600;
-
-        var domains = _configStore.GetManagedDomains();
-        var results = new List<DomainUpdateResult>();
-
-        foreach (var domain in domains)
-        {
-            try
-            {
-                var zone = await _dnsService.FindZoneForDomainAsync(domain);
-                if (zone is null)
-                {
-                    results.Add(new DomainUpdateResult
-                    {
-                        Domain = domain,
-                        Action = "error",
-                        Error = "No matching Azure DNS zone found"
-                    });
-                    continue;
-                }
-
-                var existing = _cache.Get(domain);
-                if (existing?.CurrentIp == ip)
-                {
-                    results.Add(new DomainUpdateResult { Domain = domain, Action = "unchanged", NewIp = ip });
-                    continue;
-                }
-
-                await _dnsService.SetARecordAsync(zone.Name, zone.ResourceGroup, ip, defaultTtl);
-
-                _cache.Upsert(new Models.DomainEntry
-                {
-                    Domain = domain,
-                    CurrentIp = ip,
-                    Ttl = defaultTtl,
-                    LastFetched = DateTime.UtcNow,
-                    LastUpdated = DateTime.UtcNow,
-                    Error = null
-                });
-
-                results.Add(new DomainUpdateResult { Domain = domain, Action = "updated", NewIp = ip });
-                _logger.LogInformation("Updated {Domain} → {Ip}", domain, ip);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to update {Domain}", domain);
-                results.Add(new DomainUpdateResult { Domain = domain, Action = "error", Error = ex.Message });
-            }
-        }
-
-        return Ok(new UpdateResponse { Success = true, DetectedIp = ip, Results = results });
+        var (success, detectedIp, results) = await _updateService.UpdateAllAsync(ip);
+        return Ok(new UpdateResponse { Success = success, DetectedIp = detectedIp, Results = results });
     }
 }

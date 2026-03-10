@@ -18,23 +18,18 @@ What it does (all steps are idempotent — safe to re-run):
   3.  Lists your subscriptions and lets you choose one.
   4.  Selects or creates the Azure resource group
       (default: dynamic-dns; created if absent).
-  5.  Selects or creates the Azure Function App
-      (Consumption plan — cheapest, no idle charges).
-  6.  Looks for an existing service principal named 'az-ddns-sp';
-      creates one if it is missing.
-  7.  Assigns the 'DNS Zone Contributor' role on the subscription
+  5.  Looks for an existing service principal named 'az-ddns-sp';
+      creates one if it is missing (used for Azure DNS ARM operations).
+  6.  Assigns the 'DNS Zone Contributor' role on the subscription
       to the SP if that assignment does not already exist.
-  8.  Generates a secure random DDNS token (used by the Azure
-      Functions endpoint) if one is not already in .env.
-  9.  Selects or creates an Azure Cache for Redis instance (optional;
-      used for distributed concurrency locking).
-  10. Lists Azure DNS zones and lets you select which domains/hostnames
+  7.  Generates a secure random DDNS token (X-DDNS-TOKEN API secret).
+  8.  Creates (or reuses) an Azure AD app registration for the web GUI
+      OIDC login — skippable; GUI falls back to API-only mode.
+  9.  Lists Azure DNS zones and lets you select which domains/hostnames
       to manage; writes dns.json (merges if it already exists).
-  11. Writes / merges all values into .env (never overwrites
-      values you have already set).
-  12. If az-functions/AzDdns/ exists, also writes
-      az-functions/AzDdns/local.settings.json for local dev.
-  13. Prints a status report.
+  10. Writes / merges all values into .env (never overwrites values you
+      have already set).
+  11. Starts the container: docker compose up -d --build
 
 Usage:
     python3 init.py                   # normal interactive run
@@ -61,20 +56,12 @@ from typing import Optional
 REPO_ROOT = Path(__file__).parent.resolve()
 ENV_FILE = REPO_ROOT / ".env"
 DNS_JSON_FILE = REPO_ROOT / "dns.json"
-FUNCTIONS_SETTINGS = REPO_ROOT / "az-functions" / "AzDdns" / "local.settings.json"
 
 DNS_ZONE_CONTRIBUTOR_ROLE = "DNS Zone Contributor"
 DEFAULT_SP_NAME           = "az-ddns-sp"
+DEFAULT_APP_REG_NAME      = "az-ddns-gui"
 DEFAULT_RESOURCE_GROUP    = "dynamic-dns"
 DEFAULT_LOCATION          = "eastus"
-
-# Redis SKU options shown to the user (cheapest first).
-# Each entry: (display_label, sku, cache_size, approx_monthly_cost)
-REDIS_SKU_OPTIONS: list[tuple[str, str, str, str]] = [
-    ("Basic  C0  — 256 MB, single node, no replication", "Basic",    "c0", "~$16/month"),
-    ("Basic  C1  — 1 GB,   single node, no replication", "Basic",    "c1", "~$54/month"),
-    ("Standard C0 — 256 MB, primary+replica",            "Standard", "c0", "~$32/month"),
-]
 
 # ANSI colours (disabled on Windows unless terminal supports them)
 _USE_COLOUR = sys.stdout.isatty() and sys.platform != "win32" or (
@@ -369,34 +356,6 @@ def get_sp_object_id(app_id: str) -> str:
     return result if isinstance(result, str) else ""
 
 
-def list_redis_instances() -> list[dict]:
-    """Return all Azure Cache for Redis instances in the current subscription."""
-    result = _az_json("redis", "list", check=False)
-    return result if isinstance(result, list) else []
-
-
-def get_redis_keys(name: str, resource_group: str) -> dict:
-    """Return the primary/secondary access keys for a Redis instance."""
-    result = _az_json(
-        "redis", "list-keys",
-        "--name", name,
-        "--resource-group", resource_group,
-        check=False,
-    )
-    return result if isinstance(result, dict) else {}
-
-
-def build_redis_connection_string(instance: dict, keys: dict) -> str:
-    """
-    Build a StackExchange.Redis connection string from an 'az redis list' entry
-    and its access keys.
-
-    Format: <hostname>:<sslPort>,password=<primaryKey>,ssl=True,abortConnect=False
-    """
-    host = instance.get("hostName", "")
-    port = instance.get("sslPort", 6380)
-    key  = keys.get("primaryKey", "")
-    return f"{host}:{port},password={key},ssl=True,abortConnect=False"
 
 
 # ---------------------------------------------------------------------------
@@ -424,109 +383,6 @@ def create_resource_group(name: str, location: str) -> dict:
     return result if isinstance(result, dict) else {}
 
 
-# ---------------------------------------------------------------------------
-# Storage account helpers (prerequisite for Function App)
-# ---------------------------------------------------------------------------
-
-def _sanitize_storage_name(base: str) -> str:
-    """Produce a valid Azure storage account name: 3-24 lowercase alphanumeric."""
-    cleaned = re.sub(r"[^a-z0-9]", "", base.lower())
-    return (cleaned or "ddns")[:24].ljust(3, "0")
-
-
-def create_storage_account(name: str, resource_group: str, location: str,
-                            sku: str = "Standard_LRS") -> dict:
-    """Create a storage account. Standard_LRS is the cheapest redundancy option."""
-    result = _az_json(
-        "storage", "account", "create",
-        "--name", name,
-        "--resource-group", resource_group,
-        "--location", location,
-        "--sku", sku,
-        "--kind", "StorageV2",
-        "--allow-blob-public-access", "false",
-    )
-    return result if isinstance(result, dict) else {}
-
-
-# ---------------------------------------------------------------------------
-# Function App helpers
-# ---------------------------------------------------------------------------
-
-def list_function_apps() -> list[dict]:
-    """Return all Function Apps in the current subscription."""
-    result = _az_json("functionapp", "list", check=False)
-    return result if isinstance(result, list) else []
-
-
-def create_function_app(name: str, resource_group: str, storage_account: str,
-                        location: str) -> dict:
-    """
-    Create an Azure Function App on a Consumption (Y1) plan — cheapest option,
-    no idle costs.  Uses dotnet-isolated runtime v10 with Functions v4.
-    """
-    result = _az_json(
-        "functionapp", "create",
-        "--name", name,
-        "--resource-group", resource_group,
-        "--storage-account", storage_account,
-        "--consumption-plan-location", location,
-        "--runtime", "dotnet-isolated",
-        "--runtime-version", "10",
-        "--functions-version", "4",
-        "--os-type", "Windows",
-    )
-    return result if isinstance(result, dict) else {}
-
-
-# ---------------------------------------------------------------------------
-# Redis create helper
-# ---------------------------------------------------------------------------
-
-def create_redis(name: str, resource_group: str, location: str,
-                 sku: str = "Basic", cache_size: str = "c0") -> dict:
-    """
-    Create an Azure Cache for Redis instance.
-    Default: Basic C0 (cheapest — 256 MB, single node, no replication).
-    WARNING: creation typically takes 10-20 minutes.
-    """
-    info(f"Creating Redis cache '{name}' ({sku} {cache_size.upper()}).")
-    warn("Redis provisioning can take 10-20 minutes — please be patient...")
-    result = _az_json(
-        "redis", "create",
-        "--name", name,
-        "--resource-group", resource_group,
-        "--location", location,
-        "--sku", sku,
-        "--vm-size", cache_size,
-    )
-    return result if isinstance(result, dict) else {}
-
-
-# ---------------------------------------------------------------------------
-# local.settings.json writer (Azure Functions)
-# ---------------------------------------------------------------------------
-
-def write_local_settings(path: Path, values: dict[str, str]) -> None:
-    existing: dict = {}
-    if path.exists():
-        try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = {}
-
-    existing.setdefault("IsEncrypted", False)
-    existing.setdefault("Values", {})
-    existing["Values"].setdefault("AzureWebJobsStorage", "UseDevelopmentStorage=true")
-    existing["Values"].setdefault("FUNCTIONS_WORKER_RUNTIME", "dotnet-isolated")
-
-    # Merge: only set values that are not already present
-    for key, val in values.items():
-        if not existing["Values"].get(key):
-            existing["Values"][key] = val
-
-    path.write_text(json.dumps(existing, indent=4), encoding="utf-8")
-
 
 # ---------------------------------------------------------------------------
 # DNS zone helpers
@@ -534,7 +390,7 @@ def write_local_settings(path: Path, values: dict[str, str]) -> None:
 
 def list_dns_zones() -> list[dict]:
     """Return all Azure DNS zones visible with the current credentials."""
-    result = _az_json("network", "dns", "zone", "list", "--output", "json", check=False)
+    result = _az_json("network", "dns", "zone", "list", check=False)
     return result if isinstance(result, list) else []
 
 
@@ -563,6 +419,59 @@ def write_dns_json(path: Path, domains: list[str]) -> list[str]:
 
     path.write_text(json.dumps(config, indent=4), encoding="utf-8")
     return added
+
+
+# ---------------------------------------------------------------------------
+# Azure AD app registration helpers (GUI OIDC)
+# ---------------------------------------------------------------------------
+
+def get_existing_app_registration(display_name: str) -> Optional[dict]:
+    """Return the first app registration matching *display_name*, or None."""
+    result = _az_json(
+        "ad", "app", "list",
+        "--display-name", display_name,
+        "--query", "[0]",
+        check=False,
+    )
+    return result if isinstance(result, dict) else None
+
+
+def create_app_registration(display_name: str, redirect_uri: str) -> tuple[str, str]:
+    """
+    Create an Azure AD app registration for OIDC GUI login.
+    Returns (client_id, client_secret).
+    """
+    app = _az_json(
+        "ad", "app", "create",
+        "--display-name", display_name,
+        "--sign-in-audience", "AzureADMyOrg",
+        "--web-redirect-uris", redirect_uri,
+        "--enable-id-token-issuance", "true",
+        "--enable-access-token-issuance", "false",
+    )
+    client_id: str = app["appId"]
+
+    # Create the service principal for the app registration
+    _az("ad", "sp", "create", "--id", client_id, check=False)
+
+    # Generate a client secret (valid 2 years)
+    secret_result = _az_json(
+        "ad", "app", "credential", "reset",
+        "--id", client_id,
+        "--years", "2",
+    )
+    client_secret: str = secret_result.get("password", "")
+    return client_id, client_secret
+
+
+def reset_app_registration_secret(client_id: str) -> str:
+    """Generate a new secret for an existing app registration."""
+    result = _az_json(
+        "ad", "app", "credential", "reset",
+        "--id", client_id,
+        "--years", "2",
+    )
+    return result.get("password", "")
 
 
 
@@ -603,8 +512,7 @@ def run(args: argparse.Namespace) -> None:
     print(_c("1;37", "\n╔══════════════════════════════════════╗"))
     print(_c("1;37",   "║        az-ddns  init script          ║"))
     print(_c("1;37",   "╚══════════════════════════════════════╝"))
-    print("  Generates .env (and local.settings.json) with all required")
-    print("  Azure credentials and a random DDNS token.")
+    print("  Generates .env and dns.json with all required Azure credentials.")
 
     # ------------------------------------------------------------------
     # 1. az CLI check
@@ -706,88 +614,9 @@ def run(args: argparse.Namespace) -> None:
             warn("Invalid selection -- try again.")
 
     # ------------------------------------------------------------------
-    # 5. Function App
+    # 5. Service principal
     # ------------------------------------------------------------------
-    step("5/11  Azure Function App")
-    function_app_name: str = existing_env.get("FUNCTION_APP_NAME", "")
-
-    if function_app_name:
-        ok(f"Function App '{function_app_name}' already set in .env -- keeping.")
-    else:
-        info("Searching for existing Azure Function Apps...")
-        fn_apps = list_function_apps()
-
-        print()
-        print("      Available Function Apps:")
-        print(f"        {'0':>3}  create new Function App")
-        for i, app in enumerate(fn_apps, 1):
-            rg  = app.get("resourceGroup", "?")
-            loc = app.get("location", "?")
-            print(f"        {i:>3}. {app['name']:<40} [rg={rg}  loc={loc}]")
-        if fn_apps:
-            print(f"        {len(fn_apps) + 1:>3}  skip -- do not configure a Function App now")
-        print()
-        info("Consumption plan (Y1) is the cheapest option -- no idle charges.")
-        print()
-
-        while True:
-            skip_idx = str(len(fn_apps) + 1) if fn_apps else ""
-            choices = (
-                "0=create new"
-                + (f", 1-{len(fn_apps)}" if fn_apps else "")
-                + (f", {skip_idx}=skip" if skip_idx else "")
-            )
-            raw = prompt(f"Select Function App ({choices})", default="0")
-
-            if raw == "0":
-                app_name = prompt(
-                    "Function App name (must be globally unique)",
-                    default="az-ddns-fn",
-                )
-                app_loc = prompt("Location", default=location or DEFAULT_LOCATION)
-                default_storage = _sanitize_storage_name(app_name + "store")
-                storage_name = prompt(
-                    "Storage account name (3-24 lowercase alphanumeric)",
-                    default=default_storage,
-                )
-                storage_name = _sanitize_storage_name(storage_name)
-                info(f"Storage SKU : Standard_LRS (cheapest)")
-                info(f"Plan        : Consumption Y1 (cheapest, no idle cost)")
-                if not confirm(
-                    f"Create storage '{storage_name}' + Function App '{app_name}' "
-                    f"in '{resource_group_name}'?",
-                    default=True,
-                ):
-                    info("Skipping Function App creation.")
-                    break
-                info(f"Creating storage account '{storage_name}'...")
-                create_storage_account(storage_name, resource_group_name, app_loc)
-                ok(f"Storage account '{storage_name}' created.")
-                info(f"Creating Function App '{app_name}'...")
-                fn_result = create_function_app(app_name, resource_group_name, storage_name, app_loc)
-                if fn_result:
-                    ok(f"Function App '{app_name}' created.")
-                else:
-                    warn("Function App creation returned unexpected output -- verify in Azure portal.")
-                function_app_name = app_name
-                break
-
-            if fn_apps and raw == skip_idx:
-                info("Skipping Function App -- you can add it later by re-running init.py.")
-                break
-
-            if re.match(r"^\d+$", raw):
-                idx = int(raw) - 1
-                if 0 <= idx < len(fn_apps):
-                    function_app_name = fn_apps[idx]["name"]
-                    ok(f"Using existing Function App '{function_app_name}'.")
-                    break
-            warn("Invalid selection -- try again.")
-
-    # ------------------------------------------------------------------
-    # 6. Service principal
-    # ------------------------------------------------------------------
-    step("6/11  Service principal")
+    step("5/11  Service principal")
     sp_client_secret: str = ""
     sp_client_id: str = ""
 
@@ -828,7 +657,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 7. Role assignment check
     # ------------------------------------------------------------------
-    step("7/11  RBAC -- DNS Zone Contributor")
+    step("6/11  RBAC -- DNS Zone Contributor")
     sp_object_id = get_sp_object_id(sp_client_id)
     if sp_object_id:
         assignments = get_role_assignments(sp_object_id, subscription_id)
@@ -847,7 +676,7 @@ def run(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # 8. DDNS token
     # ------------------------------------------------------------------
-    step("8/11  DDNS token")
+    step("7/11  DDNS token")
     ddns_token = existing_env.get("DDNS_TOKEN", "")
     if ddns_token:
         ok("DDNS_TOKEN already set in .env -- keeping existing value.")
@@ -856,101 +685,50 @@ def run(args: argparse.Namespace) -> None:
         ok(f"Generated new DDNS_TOKEN ({len(ddns_token)} hex chars).")
 
     # ------------------------------------------------------------------
-    # 9. Redis (optional -- for distributed concurrency lock)
+    # 8. App registration (GUI OIDC login) — optional
     # ------------------------------------------------------------------
-    step("9/11  Redis (optional -- for distributed concurrency lock)")
-    redis_conn_str = existing_env.get("REDIS_CONNECTION_STRING", "")
+    step("8/11  App registration (GUI OIDC)")
+    app_client_id:     str = existing_env.get("AZURE_APP_CLIENT_ID", "")
+    app_client_secret: str = existing_env.get("AZURE_APP_CLIENT_SECRET", "")
+    redirect_uri: str = "http://localhost:8080/signin-oidc"
 
-    if redis_conn_str:
-        ok("REDIS_CONNECTION_STRING already set in .env -- keeping existing value.")
+    if app_client_id:
+        ok(f"AZURE_APP_CLIENT_ID already in .env (appId={app_client_id}) — keeping.")
+        if not app_client_secret:
+            warn("No AZURE_APP_CLIENT_SECRET in .env.")
+            if confirm("Generate a new secret for the existing app registration?", default=False):
+                app_client_secret = reset_app_registration_secret(app_client_id)
+                ok("New app registration secret generated.")
     else:
-        info("Searching for Azure Cache for Redis instances...")
-        redis_instances = list_redis_instances()
-
-        create_idx = len(redis_instances) + 1
-
-        print()
-        print("      Redis options:")
-        print(f"        {'0':>3}  skip -- use in-process concurrency lock (no Redis needed)")
-        for i, inst in enumerate(redis_instances, 1):
-            rg   = inst.get("resourceGroup", "?")
-            host = inst.get("hostName", "?")
-            sku  = inst.get("sku", {}).get("name", "?")
-            print(f"        {i:>3}. {inst['name']:<30} {host}  [{sku}  rg={rg}]")
-        print(f"        {create_idx:>3}  create new Azure Cache for Redis")
-        print()
-        info("Basic C0 (~$16/month) is the smallest available Redis tier.")
-        print()
-
-        while True:
-            choices = (
-                "0=skip"
-                + (f", 1-{len(redis_instances)} existing" if redis_instances else "")
-                + f", {create_idx}=create new"
-            )
-            raw = prompt(f"Select option ({choices})", default="0")
-
-            if raw == "0":
-                info("Skipping Redis -- in-process semaphore will be used.")
-                break
-
-            if raw == str(create_idx):
-                redis_name = prompt("Redis cache name", default="az-ddns-redis")
-                redis_loc  = prompt("Location", default=location or DEFAULT_LOCATION)
-                print()
-                print("      Redis SKU options (cheapest first):")
-                for i, (label, _sku, _size, cost) in enumerate(REDIS_SKU_OPTIONS, 1):
-                    marker = "  <- default" if i == 1 else ""
-                    print(f"        {i}. {label}  ({cost}){marker}")
-                print()
-                sku_raw = prompt(f"Select SKU (1-{len(REDIS_SKU_OPTIONS)})", default="1")
-                try:
-                    _label, chosen_sku, chosen_size, _ = REDIS_SKU_OPTIONS[int(sku_raw) - 1]
-                except (ValueError, IndexError):
-                    _label, chosen_sku, chosen_size, _ = REDIS_SKU_OPTIONS[0]
-                if not confirm(
-                    f"Create Redis '{redis_name}' ({chosen_sku} {chosen_size.upper()}) in '{redis_loc}'?",
-                    default=True,
-                ):
-                    info("Skipping Redis creation -- in-process semaphore will be used.")
-                    break
-                new_redis = create_redis(redis_name, resource_group_name, redis_loc,
-                                         chosen_sku, chosen_size)
-                if new_redis:
-                    ok(f"Redis cache '{redis_name}' created.")
-                    redis_keys = get_redis_keys(redis_name, resource_group_name)
-                    if redis_keys.get("primaryKey"):
-                        redis_conn_str = build_redis_connection_string(new_redis, redis_keys)
-                        ok("Redis connection string configured.")
-                    else:
-                        warn("Could not retrieve Redis key. Set REDIS_CONNECTION_STRING in .env manually.")
-                else:
-                    warn("Redis creation returned unexpected output. Set REDIS_CONNECTION_STRING in .env manually.")
-                break
-
-            if re.match(r"^\d+$", raw):
-                idx = int(raw) - 1
-                if 0 <= idx < len(redis_instances):
-                    chosen_redis = redis_instances[idx]
-                    info(f"Fetching access keys for '{chosen_redis['name']}'...")
-                    redis_keys = get_redis_keys(
-                        chosen_redis["name"],
-                        chosen_redis["resourceGroup"],
-                    )
-                    if not redis_keys.get("primaryKey"):
-                        warn("Could not retrieve Redis access key. Skipping.")
-                    else:
-                        redis_conn_str = build_redis_connection_string(chosen_redis, redis_keys)
-                        ok(f"Redis connection string built for '{chosen_redis['name']}'.")
-                    break
-            warn("Invalid selection -- enter a number.")
+        info(
+            "An Azure AD app registration is needed for the web GUI login.\n"
+            "         It lets users sign in with their Microsoft account to access the dashboard.\n"
+            f"         Redirect URI: {redirect_uri}"
+        )
+        if confirm(f"Create app registration '{DEFAULT_APP_REG_NAME}' now?", default=True):
+            existing_app = get_existing_app_registration(DEFAULT_APP_REG_NAME)
+            if existing_app:
+                app_client_id = existing_app["appId"]
+                ok(f"Found existing app registration '{DEFAULT_APP_REG_NAME}' (appId={app_client_id}).")
+                if confirm("Generate a new client secret for it?", default=True):
+                    app_client_secret = reset_app_registration_secret(app_client_id)
+                    ok("Client secret generated.")
+            else:
+                info(f"Creating app registration '{DEFAULT_APP_REG_NAME}'...")
+                app_client_id, app_client_secret = create_app_registration(
+                    DEFAULT_APP_REG_NAME, redirect_uri
+                )
+                ok(f"App registration created (appId={app_client_id}).")
+        else:
+            info("Skipping app registration — GUI will run in API-only mode.")
+            info("Re-run init.py to add it later.")
 
     # ------------------------------------------------------------------
     # 10. DNS zones → dns.json
     # ------------------------------------------------------------------
-    step("10/11  DNS zones (dns.json)")
+    step("9/11  DNS zones (dns.json)")
 
-    info("Fetching Azure DNS zones visible to the service principal...")
+    info("Fetching Azure DNS zones visible to your current Azure CLI login...")
     all_zones = list_dns_zones()
 
     selected_domains: list[str] = []
@@ -1022,9 +800,9 @@ def run(args: argparse.Namespace) -> None:
             ok("dns.json already contains all selected domains — nothing new added.")
 
     # ------------------------------------------------------------------
-    # 11. Write .env and local.settings.json
+    # 10. Write .env
     # ------------------------------------------------------------------
-    step("11/11  Write configuration files")
+    step("10/11  Write configuration files")
 
     env_values: dict[str, str] = {
         "AZURE_TENANT_ID":       tenant_id,
@@ -1045,42 +823,47 @@ def run(args: argparse.Namespace) -> None:
     if location:
         env_values["AZURE_LOCATION"] = location
         env_comments["AZURE_LOCATION"] = "Azure region used for az-ddns resources"
-    if function_app_name:
-        env_values["FUNCTION_APP_NAME"] = function_app_name
-        env_comments["FUNCTION_APP_NAME"] = (
-            "Azure Function App name (deploy with: "
-            "func azure functionapp publish <name>)"
-        )
     if sp_client_secret:
         env_values["AZURE_CLIENT_SECRET"] = sp_client_secret
-        env_comments["AZURE_CLIENT_SECRET"] = "Service principal client secret"
-    if redis_conn_str:
-        env_values["REDIS_CONNECTION_STRING"] = redis_conn_str
-        env_comments["REDIS_CONNECTION_STRING"] = (
-            "Azure Cache for Redis -- used for distributed concurrency lock (DNS_ key prefix)"
-        )
+        env_comments["AZURE_CLIENT_SECRET"] = "Service principal client secret (for DNS ARM operations)"
+    if app_client_id:
+        env_values["AZURE_APP_CLIENT_ID"] = app_client_id
+        env_comments["AZURE_APP_CLIENT_ID"] = "Azure AD app registration client ID (GUI OIDC login)"
+    if app_client_secret:
+        env_values["AZURE_APP_CLIENT_SECRET"] = app_client_secret
+        env_comments["AZURE_APP_CLIENT_SECRET"] = "Azure AD app registration client secret (GUI OIDC login)"
 
     write_env(ENV_FILE, env_values, env_comments)
     ok(f".env written to {ENV_FILE}")
 
-    # Azure Functions local.settings.json
-    if FUNCTIONS_SETTINGS.parent.exists():
-        fn_values: dict[str, str] = {
-            "AZURE_TENANT_ID":       tenant_id,
-            "AZURE_CLIENT_ID":       sp_client_id,
-            "AZURE_SUBSCRIPTION_ID": subscription_id,
-            "DDNS_TOKEN":            ddns_token,
-            "DDNS_CONCURRENCY_TIMEOUT_SECONDS": "30",
-            "DNS_TTL":               "3600",
-            "DNS_MX_PREFERENCE":     "10",
-            "REDIS_CONNECTION_STRING": redis_conn_str,
-        }
-        if sp_client_secret:
-            fn_values["AZURE_CLIENT_SECRET"] = sp_client_secret
-        write_local_settings(FUNCTIONS_SETTINGS, fn_values)
-        ok(f"local.settings.json written to {FUNCTIONS_SETTINGS}")
+    # ------------------------------------------------------------------
+    # 11. Start the container
+    # ------------------------------------------------------------------
+    step("11/11  Start container")
+
+    compose_file = REPO_ROOT / "docker-compose.yml"
+    if not DNS_JSON_FILE.exists():
+        warn("dns.json not found — the container will start with no managed domains.")
+        warn(f"  Create it via the GUI at http://localhost:8080, or re-run init.py.")
+    if not compose_file.exists():
+        warn(f"docker-compose.yml not found at {compose_file}; skipping container start.")
     else:
-        info("az-functions/ directory not found; skipping local.settings.json.")
+        try:
+            import shutil
+            if shutil.which("docker") is None:
+                warn("'docker' not found in PATH; skipping container start.")
+                info("Run manually:  docker compose up -d --build")
+            else:
+                info("Starting container: docker compose up -d --build ...")
+                subprocess.run(
+                    ["docker", "compose", "up", "-d", "--build"],
+                    cwd=str(REPO_ROOT),
+                    check=True,
+                )
+                ok("Container started.  Dashboard → http://localhost:8080")
+        except subprocess.CalledProcessError as exc:
+            warn(f"docker compose failed (exit {exc.returncode}). Run manually:")
+            warn("  docker compose up -d --build")
 
     # ------------------------------------------------------------------
     # Status report
@@ -1094,22 +877,16 @@ def run(args: argparse.Namespace) -> None:
     print(f"  Tenant ID       : {tenant_id}")
     print(f"  Resource group  : {resource_group_name or '<not set>'}")
     print(f"  Location        : {location or '<not set>'}")
-    print(f"  Function App    : {function_app_name or '<not set>'}")
-    print(f"  Client ID       : {sp_client_id}")
+    print(f"  Client ID (SP)  : {sp_client_id}")
     print(f"  Client secret   : {'<set>' if sp_client_secret else '<NOT SET -- edit .env>'}")
     print(f"  DDNS token      : {ddns_token[:8]}...  (stored in .env)")
-    print(f"  Redis           : {'<configured>' if redis_conn_str else '<not configured -- in-process lock>'}")
-    print(f"  dns.json        : {DNS_JSON_FILE if DNS_JSON_FILE.exists() else '<not created -- re-run init.py>'}")
+    print(f"  GUI app reg     : {app_client_id or '<not configured -- API-only mode>'}")
+    print(f"  dns.json        : {DNS_JSON_FILE if DNS_JSON_FILE.exists() else '<not created>'}")
     print()
-    print("  Next steps:")
-    if not DNS_JSON_FILE.exists():
-        print("    * Re-run init.py to select DNS zones and generate dns.json")
-    if function_app_name:
-        print(f"    * Deploy to Azure :  cd az-functions/AzDdns && func azure functionapp publish {function_app_name}")
-    else:
-        print("    * Test locally    :  python3 run.py")
-        if FUNCTIONS_SETTINGS.parent.exists():
-            print("    * Start locally   :  cd az-functions/AzDdns && func start")
+    print("  Dashboard  :  http://localhost:8080")
+    print("  API update :  curl -X POST http://localhost:8080/api/update")
+    print(f"               -H 'X-DDNS-TOKEN: {ddns_token[:8]}...' -H 'Content-Type: application/json'")
+    print("               -d '{}'")
     print()
     if not sp_client_secret:
         warn("AZURE_CLIENT_SECRET is not set in .env.")
@@ -1117,7 +894,6 @@ def run(args: argparse.Namespace) -> None:
         warn(f"  echo 'AZURE_CLIENT_SECRET=<secret>' >> {ENV_FILE}")
         warn("Or re-run with --force-new-sp to generate a new SP and secret.")
     print()
-
 
 
 def main() -> None:

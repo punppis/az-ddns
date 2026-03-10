@@ -187,7 +187,7 @@ if (Command-Exists 'dotnet') {
         Install-Quietly ".NET 10 SDK" { Winget-Install 'Microsoft.DotNet.SDK.10' }
         Refresh-Path
     } else {
-        Warn "Skipping .NET SDK — needed to build/run Azure Functions locally."
+        Warn "Skipping .NET SDK — needed to build the az-ddns container image locally."
     }
 }
 

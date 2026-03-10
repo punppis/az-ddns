@@ -1,0 +1,15 @@
+services:
+  az-ddns:
+    build: app/
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      # Explicit path to the mounted data directory
+      DATA_PATH: /data
+    volumes:
+      # dns.json: domain list (created by init.py; also editable via the GUI)
+      - ./dns.json:/data/dns.json
+      # state.json: persisted IP cache (written by the app; survives restarts)
+      - ./state.json:/data/state.json

@@ -1,5 +1,6 @@
 .env
 dns.json
+state.json
 state/
 __pycache__/
 *.pyc
@@ -10,6 +11,3 @@ bin/
 obj/
 *.user
 .vs/
-
-# Azure Functions local secrets (copy from local.settings.json.example)
-local.settings.json

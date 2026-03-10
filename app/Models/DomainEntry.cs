@@ -11,5 +11,6 @@ public class DomainEntry
 
     public bool IsCacheExpired =>
         LastFetched is null ||
+        Ttl <= 0 ||
         DateTime.UtcNow > LastFetched.Value.AddSeconds(Ttl / 2.0);
 }

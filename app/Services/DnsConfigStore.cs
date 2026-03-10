@@ -12,7 +12,8 @@ public class DnsConfigStore
     public DnsConfigStore(IConfiguration configuration, ILogger<DnsConfigStore> logger)
     {
         _logger = logger;
-        var dataPath = configuration["DATA_PATH"] ?? "/data";
+        var isContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") == "true";
+        var dataPath = configuration["DATA_PATH"] ?? (isContainer ? "/data" : ".");
         _configPath = Path.Combine(dataPath, "dns.json");
     }
 
@@ -83,6 +84,7 @@ public class DnsConfigStore
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
+        config.LastUpdate = DateTime.UtcNow.ToString("O");
         var json = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(_configPath, json);
     }

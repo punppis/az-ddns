@@ -40,6 +40,7 @@ if (guiAuthEnabled)
 builder.Services.AddSingleton<DnsCache>();
 builder.Services.AddSingleton<AzureDnsService>();
 builder.Services.AddSingleton<DnsConfigStore>();
+builder.Services.AddSingleton<DnsUpdateService>();
 builder.Services.AddHostedService<DnsBackgroundService>();
 
 // ─── MVC / Razor Pages ────────────────────────────────────────────────────────

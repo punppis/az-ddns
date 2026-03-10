@@ -65,15 +65,7 @@ public class DnsBackgroundService : BackgroundService
                 if (zone is null)
                 {
                     _logger.LogWarning("No matching Azure DNS zone found for {Domain}", domain);
-                    _cache.Upsert(new DomainEntry
-                    {
-                        Domain = domain,
-                        CurrentIp = existing?.CurrentIp,
-                        Ttl = existing?.Ttl ?? defaultTtl,
-                        LastFetched = existing?.LastFetched,
-                        LastUpdated = existing?.LastUpdated,
-                        Error = "No matching Azure DNS zone found"
-                    });
+                    UpsertError(domain, existing, defaultTtl, "No matching Azure DNS zone found");
                     continue;
                 }
 
@@ -92,16 +84,21 @@ public class DnsBackgroundService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error polling {Domain}", domain);
-                _cache.Upsert(new DomainEntry
-                {
-                    Domain = domain,
-                    CurrentIp = existing?.CurrentIp,
-                    Ttl = existing?.Ttl ?? defaultTtl,
-                    LastFetched = existing?.LastFetched,
-                    LastUpdated = existing?.LastUpdated,
-                    Error = ex.Message
-                });
+                UpsertError(domain, existing, defaultTtl, ex.Message);
             }
         }
+    }
+
+    private void UpsertError(string domain, DomainEntry? existing, int defaultTtl, string error)
+    {
+        _cache.Upsert(new DomainEntry
+        {
+            Domain = domain,
+            CurrentIp = existing?.CurrentIp,
+            Ttl = existing?.Ttl ?? defaultTtl,
+            LastFetched = existing?.LastFetched,
+            LastUpdated = existing?.LastUpdated,
+            Error = error
+        });
     }
 }

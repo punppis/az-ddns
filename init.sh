@@ -271,7 +271,7 @@ else
         sudo ln -sf /usr/local/share/dotnet/dotnet /usr/local/bin/dotnet 2>/dev/null || true"
     fi
   else
-    warn "Skipping .NET SDK — needed to build/run Azure Functions locally."
+    warn "Skipping .NET SDK — needed to build the az-ddns container image locally."
   fi
 fi
 
