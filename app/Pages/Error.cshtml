@@ -1,0 +1,15 @@
+@page "/error"
+@model AzDdns.Pages.ErrorModel
+@{
+    ViewData["Title"] = "Error";
+}
+
+<div class="text-center py-5">
+    <h1 class="text-danger">An error occurred</h1>
+    @if (Model.ShowRequestId)
+    {
+        <p>Request ID: <code>@Model.RequestId</code></p>
+    }
+    <p class="text-muted">Please try again. If the problem persists, contact your administrator.</p>
+    <a asp-page="/Index" class="btn btn-primary">Return to Dashboard</a>
+</div>

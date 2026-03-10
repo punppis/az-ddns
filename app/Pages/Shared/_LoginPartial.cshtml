@@ -1,0 +1,22 @@
+@inject IConfiguration Configuration
+
+@{
+    var guiAuthEnabled = !string.IsNullOrWhiteSpace(Configuration["AZURE_APP_CLIENT_ID"]);
+}
+
+@if (guiAuthEnabled)
+{
+    @if (User.Identity?.IsAuthenticated == true)
+    {
+        <span class="navbar-text me-3 text-light">@User.Identity.Name</span>
+        <a class="btn btn-outline-light btn-sm" asp-area="MicrosoftIdentity" asp-controller="Account" asp-action="SignOut">Sign out</a>
+    }
+    else
+    {
+        <a class="btn btn-outline-light btn-sm" asp-area="MicrosoftIdentity" asp-controller="Account" asp-action="SignIn">Sign in</a>
+    }
+}
+else
+{
+    <span class="badge bg-secondary">API-only mode</span>
+}

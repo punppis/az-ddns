@@ -1,0 +1,126 @@
+@page
+@model AzDdns.Pages.Domains.IndexModel
+@{
+    ViewData["Title"] = "Manage Domains";
+}
+
+<h2 class="mb-4">Manage Domains</h2>
+
+@if (Model.GuiAuthEnabled && User.Identity?.IsAuthenticated != true)
+{
+    <div class="alert alert-warning">
+        You are not signed in. <a asp-area="MicrosoftIdentity" asp-controller="Account" asp-action="SignIn">Sign in with Microsoft</a> to manage domains.
+    </div>
+    return;
+}
+
+@if (!Model.GuiAuthEnabled)
+{
+    <div class="alert alert-info">
+        GUI authentication is not configured (<code>AZURE_APP_CLIENT_ID</code> not set). Running in API-only mode.
+    </div>
+}
+
+@if (TempData["Message"] is string msg)
+{
+    <div class="alert alert-success alert-dismissible fade show">
+        @msg <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+}
+@if (TempData["Error"] is string err)
+{
+    <div class="alert alert-danger alert-dismissible fade show">
+        @err <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+}
+
+@if (Model.LoadError is not null)
+{
+    <div class="alert alert-warning">
+        <strong>Could not load Azure DNS zones:</strong> @Model.LoadError
+    </div>
+}
+
+<div class="card">
+    <div class="card-header">
+        Azure DNS Zones
+        <small class="text-muted ms-2">Only zones visible to the configured service principal are shown.</small>
+    </div>
+    <div class="card-body p-0">
+        @if (!Model.Zones.Any())
+        {
+            <p class="text-muted p-3 mb-0">No Azure DNS zones found.</p>
+        }
+        else
+        {
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Zone</th>
+                        <th>Resource Group</th>
+                        <th class="text-center">Managed</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var zone in Model.Zones)
+                    {
+                        var isManaged = Model.ManagedDomains.Contains(zone.Name, StringComparer.OrdinalIgnoreCase);
+                        <tr>
+                            <td><code>@zone.Name</code></td>
+                            <td>@zone.ResourceGroup</td>
+                            <td class="text-center">
+                                @if (isManaged)
+                                {
+                                    <span class="badge bg-success">✔ Yes</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">No</span>
+                                }
+                            </td>
+                            <td>
+                                @if (isManaged)
+                                {
+                                    <form method="post" asp-page-handler="Remove" class="d-inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="domain" value="@zone.Name" />
+                                        <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                onclick="return confirm('Remove @zone.Name from managed domains?')">
+                                            Remove
+                                        </button>
+                                    </form>
+                                }
+                                else
+                                {
+                                    <form method="post" asp-page-handler="Add" class="d-inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="domain" value="@zone.Name" />
+                                        <button type="submit" class="btn btn-sm btn-outline-primary">Add</button>
+                                    </form>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
+<div class="mt-4 card">
+    <div class="card-header">Add Custom Domain</div>
+    <div class="card-body">
+        <form method="post" asp-page-handler="Add" class="row g-2 align-items-end">
+            @Html.AntiForgeryToken()
+            <div class="col-md-5">
+                <label for="customDomain" class="form-label">Domain name</label>
+                <input type="text" class="form-control" id="customDomain" name="domain"
+                       placeholder="e.g. home.example.com" required />
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary">Add Domain</button>
+            </div>
+        </form>
+    </div>
+</div>
