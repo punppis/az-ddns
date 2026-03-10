@@ -77,7 +77,7 @@ http://localhost:8080
 |------------------------|-------------|
 | Background service     | Polls Azure DNS every 30 min (configurable), caches A `@` records in memory |
 | In-memory cache        | Entries expire at 50% of the DNS TTL; refreshed by the background service |
-| State persistence      | Current IP per domain written to `state.json` on every change; reloaded on startup |
+| State persistence      | Current IP per domain kept in memory; survives restarts via `dns.json` |
 | `POST /api/update`     | Compares requested IP to cache; calls Azure DNS ARM only when IP changed |
 | GUI                    | Razor Pages dashboard — view domains, trigger updates, add/remove managed zones |
 
@@ -197,7 +197,7 @@ DDNS_TOKEN=<random-secret>
 | `AZURE_APP_CLIENT_SECRET` | No       | App registration client secret |
 | `DNS_POLL_INTERVAL`       | No       | Background poll interval in seconds (default: `1800`) |
 | `DNS_TTL`                 | No       | DNS A record TTL in seconds (default: `3600`) |
-| `DATA_PATH`               | No       | Path to `dns.json` and `state.json` (default: `/data` in container, `.` locally) |
+| `DATA_PATH`               | No       | Path to `dns.json` (default: `/data` in container, `.` locally) |
 
 \* When `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` are all absent, `DefaultAzureCredential` is used — which picks up the VM's managed identity automatically.  
 † `AZURE_SUBSCRIPTION_ID` is strongly recommended when a VM has access to multiple subscriptions.
@@ -210,9 +210,8 @@ DDNS_TOKEN=<random-secret>
 az-ddns/
   init.sh / init.ps1    — dependency bootstrap (per platform)
   init.py               — interactive Azure provisioning + dns.json generation
-  docker-compose.yml    — container definition (mounts dns.json + state.json)
+  docker-compose.yml    — container definition (mounts dns.json)
   dns.json              — domain list (created by init.py; editable via GUI)  [git-ignored]
-  state.json            — IP cache state (written by the app at runtime)       [git-ignored]
   .env                  — credentials (written by init.py)                     [git-ignored]
   app/
     AzDdns.csproj       — .NET 10 ASP.NET Core project
@@ -220,7 +219,7 @@ az-ddns/
     Program.cs          — app host setup
     Services/
       AzureDnsService.cs    — Azure DNS ARM read/write
-      DnsCache.cs           — in-memory cache + state.json persistence
+      DnsCache.cs           — in-memory cache
       DnsConfigStore.cs     — dns.json read/write
       DnsBackgroundService.cs — periodic DNS poll
     Controllers/
