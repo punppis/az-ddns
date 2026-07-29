@@ -3,10 +3,6 @@
 az-ddns.conf
 *.local.conf
 
-# Docker build artifacts
-Dockerfile
-.dockerignore
-
 # Local state
 *.log
 last_ip.txt

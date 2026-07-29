@@ -1,0 +1,28 @@
+# Sensitive config — never copy into image
+.env
+az-ddns.conf
+*.local.conf
+
+# Docker build artifacts
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Local state
+*.log
+last_ip.txt
+*.state
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
