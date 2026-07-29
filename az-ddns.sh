@@ -48,16 +48,11 @@ STATE_DIR="$(dirname "$STATE_FILE")"
 mkdir -p "$STATE_DIR"
 
 # Get current public IP
-if [[ -n "${IP_SERVICE_COMMAND:-}" ]]; then
-    log_msg "Running IP command: $IP_SERVICE_COMMAND"
-    PUBLIC_IP=$(eval "$IP_SERVICE_COMMAND" 2>/dev/null) || true
-elif [[ -n "${IP_SERVICE_URL:-}" ]]; then
-    log_msg "Checking public IP from $IP_SERVICE_URL..."
-    PUBLIC_IP=$(curl -sS --connect-timeout 10 --max-time 15 --tlsv1.2 --proto =https "$IP_SERVICE_URL" 2>/dev/null)
-else
-    log_msg "ERROR: Neither IP_SERVICE_COMMAND nor IP_SERVICE_URL is configured."
+log_msg "Running IP command: $IP_SERVICE_COMMAND"
+PUBLIC_IP=$(eval "$IP_SERVICE_COMMAND" 2>/dev/null) || {
+    log_msg "ERROR: IP command failed (exit code $?)"
     exit 1
-fi
+}
 
 # Validate it looks like an IPv4 address
 if ! [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

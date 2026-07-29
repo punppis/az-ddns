@@ -1,9 +1,9 @@
 #!/bin/bash
-# Default IP service for az-ddns
-# Returns the public IPv4 address by querying a web service.
+# Default IP resolver for az-ddns
+# Queries IP_SERVICE_URL and writes the public IPv4 address to stdout.
 #
-# Override by setting IP_SERVICE_BINARY to a custom script that
-# writes a plain IPv4 address to stdout.
+# Override by setting IP_SERVICE_COMMAND to a custom script or command.
+# This script uses IP_SERVICE_URL (default: https://api.ipify.org).
 
 set -euo pipefail
 
