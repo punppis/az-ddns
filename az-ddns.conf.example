@@ -13,10 +13,12 @@ AZ_RECORD_TTL=300
 # Log file (comment out to log to stdout/stderr only)
 # LOG_FILE=/var/log/az-ddns.log
 
-# IP check — use a command, script path, or URL that returns a plain IPv4 address
+# IP check — defaults to bundled az-ddns-ip.sh. Override with any command
+# that writes a plain IPv4 address to stdout.
+# IP_SERVICE_COMMAND=/usr/local/bin/az-ddns-ip.sh
 # IP_SERVICE_COMMAND="curl -s ifconfig.me"
 # IP_SERVICE_COMMAND="dig +short myip.opendns.com @resolver1.opendns.com"
-# IP_SERVICE_URL=https://api.ipify.org
+IP_SERVICE_URL=https://api.ipify.org
 
 # State file to track last known IP (prevents unnecessary updates)
 STATE_FILE=/var/lib/az-ddns/last_ip.txt

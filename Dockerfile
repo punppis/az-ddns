@@ -23,6 +23,7 @@ ENV AZ_DNS_ZONE=changeme.example.com
 ENV AZ_RECORD_NAME=@
 ENV AZ_RECORD_TTL=300
 ENV IP_SERVICE_URL=https://api.ipify.org
+ENV IP_SERVICE_COMMAND=/usr/local/bin/az-ddns-ip.sh
 ENV STATE_FILE=/var/lib/az-ddns/last_ip.txt
 
 # Security: run as non-root azure-cli user (UID 1001 in azure-cli image)

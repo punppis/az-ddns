@@ -40,8 +40,8 @@ All settings go in `az-ddns.conf` (copy from `az-ddns.conf.example`):
 | `AZ_DNS_ZONE` | **yes** | `changeme.example.com` | DNS zone name |
 | `AZ_RECORD_NAME` | no | `@` | A record name (use `@` for zone apex) |
 | `AZ_RECORD_TTL` | no | `300` | DNS TTL in seconds |
-| `IP_SERVICE_URL` | no | `https://api.ipify.org` | Service that returns your public IPv4 (used if `IP_SERVICE_COMMAND` is not set) |
-| `IP_SERVICE_COMMAND` | no | — | Shell command that writes your public IPv4 to stdout (takes precedence over URL) |
+| `IP_SERVICE_COMMAND` | no | `/usr/local/bin/az-ddns-ip.sh` | Shell command that writes your public IPv4 to stdout (takes precedence over `IP_SERVICE_URL`) |
+| `IP_SERVICE_URL` | no | `https://api.ipify.org` | Web service that returns your public IPv4 (used by the default `az-ddns-ip.sh`) |
 | `STATE_FILE` | no | `/var/lib/az-ddns/last_ip.txt` | Persists last IP across restarts |
 | `LOG_FILE` | no | (stdout) | Optional log file path |
 | `AZURE_CLIENT_ID` | no | — | Service principal client ID (Docker without Azure CLI) |
@@ -84,7 +84,7 @@ Then set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` in `az-
 
 ### Custom IP Command
 
-Set `IP_SERVICE_COMMAND` to any shell command that writes a plain IPv4 address to stdout:
+The default `az-ddns-ip.sh` queries `IP_SERVICE_URL`. Override `IP_SERVICE_COMMAND` with any shell command:
 
 ```bash
 # curl
@@ -93,14 +93,9 @@ IP_SERVICE_COMMAND="curl -s ifconfig.me"
 # dig
 IP_SERVICE_COMMAND="dig +short myip.opendns.com @resolver1.opendns.com"
 
-# Custom script
-IP_SERVICE_COMMAND="/usr/local/bin/az-ddns-ip.sh"
-
 # Router query
 IP_SERVICE_COMMAND="ssh router 'ifconfig pppoe-wan | grep inet'"
 ```
-
-Put it in `az-ddns.conf`. The default `az-ddns-ip.sh` is provided as a reference but not required.
 
 ## Security
 

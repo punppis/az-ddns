@@ -14,7 +14,7 @@ AZ_DNS_ZONE="${AZ_DNS_ZONE:-changeme.example.com}"
 AZ_RECORD_NAME="${AZ_RECORD_NAME:-@}"
 AZ_RECORD_TTL="${AZ_RECORD_TTL:-300}"
 IP_SERVICE_URL="${IP_SERVICE_URL:-https://api.ipify.org}"
-IP_SERVICE_COMMAND="${IP_SERVICE_COMMAND:-}"
+IP_SERVICE_COMMAND="${IP_SERVICE_COMMAND:-/usr/local/bin/az-ddns-ip.sh}"
 STATE_FILE="${STATE_FILE:-/var/lib/az-ddns/last_ip.txt}"
 LOG_FILE="${LOG_FILE:-}"
 
