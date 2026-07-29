@@ -1,0 +1,27 @@
+[Unit]
+Description=Azure Dynamic DNS Updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/az-ddns.sh
+User=az-ddns
+Group=az-ddns
+StandardOutput=journal
+StandardError=journal
+
+# State directory
+StateDirectory=az-ddns
+RuntimeDirectory=az-ddns
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/az-ddns /var/log
+ReadOnlyPaths=/etc/az-ddns
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

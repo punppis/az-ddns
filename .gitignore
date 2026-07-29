@@ -1,0 +1,29 @@
+# Sensitive config — DO NOT commit real values
+.env
+az-ddns.conf
+*.local.conf
+
+# Docker build artifacts
+Dockerfile
+.dockerignore
+
+# Local state
+*.log
+last_ip.txt
+*.state
+
+# Azure credentials
+.azure/
+*.azureauth
+azureauth.config
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

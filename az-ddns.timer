@@ -1,0 +1,12 @@
+[Unit]
+Description=Azure DDNS Update Timer (runs every 5 minutes)
+Requires=az-ddns.service
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=300s
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

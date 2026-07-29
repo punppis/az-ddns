@@ -1,0 +1,45 @@
+services:
+  az-ddns:
+    build: .
+    container_name: az-ddns
+    restart: unless-stopped
+
+    env_file:
+      - az-ddns.conf
+
+    environment:
+      # ── REQUIRED ──────────────────────────────────────────
+      - AZ_RESOURCE_GROUP=${AZ_RESOURCE_GROUP:-changeme}
+
+      # ── Azure Service Principal (alternative to mounting ~/.azure) ─
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
+
+      # ── DNS zone settings ──
+      - AZ_DNS_ZONE=${AZ_DNS_ZONE:-changeme.example.com}
+      - AZ_RECORD_NAME=${AZ_RECORD_NAME:-@}
+      # - AZ_RECORD_TTL=300
+      # - INTERVAL=300
+      # - IP_SERVICE_URL=https://api.ipify.org
+      # Azure config written to tmpfs (rootfs is read-only)
+      - AZURE_CONFIG_DIR=/tmp/.azure
+
+    volumes:
+      # Persist last known IP across restarts
+      - az-ddns-state:/var/lib/az-ddns
+
+      # Mount Azure credentials from host (read-only)
+      - ~/.azure:/host-azure:ro
+
+    # Run as non-root (UID 1001 = azure-cli image default user)
+    user: "1001:1001"
+
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,mode=1777
+      - /home/az-ddns:size=10M,mode=700
+
+volumes:
+  az-ddns-state:
