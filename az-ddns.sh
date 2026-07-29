@@ -14,6 +14,7 @@ AZ_DNS_ZONE="${AZ_DNS_ZONE:-changeme.example.com}"
 AZ_RECORD_NAME="${AZ_RECORD_NAME:-@}"
 AZ_RECORD_TTL="${AZ_RECORD_TTL:-300}"
 IP_SERVICE_URL="${IP_SERVICE_URL:-https://api.ipify.org}"
+IP_SERVICE_COMMAND="${IP_SERVICE_COMMAND:-}"
 STATE_FILE="${STATE_FILE:-/var/lib/az-ddns/last_ip.txt}"
 LOG_FILE="${LOG_FILE:-}"
 
@@ -47,8 +48,16 @@ STATE_DIR="$(dirname "$STATE_FILE")"
 mkdir -p "$STATE_DIR"
 
 # Get current public IP
-log_msg "Checking public IP from $IP_SERVICE_URL..."
-PUBLIC_IP=$(curl -sS --connect-timeout 10 --max-time 15 --tlsv1.2 --proto =https "$IP_SERVICE_URL" 2>/dev/null)
+if [[ -n "${IP_SERVICE_COMMAND:-}" ]]; then
+    log_msg "Running IP command: $IP_SERVICE_COMMAND"
+    PUBLIC_IP=$(eval "$IP_SERVICE_COMMAND" 2>/dev/null) || true
+elif [[ -n "${IP_SERVICE_URL:-}" ]]; then
+    log_msg "Checking public IP from $IP_SERVICE_URL..."
+    PUBLIC_IP=$(curl -sS --connect-timeout 10 --max-time 15 --tlsv1.2 --proto =https "$IP_SERVICE_URL" 2>/dev/null)
+else
+    log_msg "ERROR: Neither IP_SERVICE_COMMAND nor IP_SERVICE_URL is configured."
+    exit 1
+fi
 
 # Validate it looks like an IPv4 address
 if ! [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

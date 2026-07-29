@@ -40,7 +40,8 @@ All settings go in `az-ddns.conf` (copy from `az-ddns.conf.example`):
 | `AZ_DNS_ZONE` | **yes** | `changeme.example.com` | DNS zone name |
 | `AZ_RECORD_NAME` | no | `@` | A record name (use `@` for zone apex) |
 | `AZ_RECORD_TTL` | no | `300` | DNS TTL in seconds |
-| `IP_SERVICE_URL` | no | `https://api.ipify.org` | Service that returns your public IPv4 |
+| `IP_SERVICE_URL` | no | `https://api.ipify.org` | Service that returns your public IPv4 (used if `IP_SERVICE_COMMAND` is not set) |
+| `IP_SERVICE_COMMAND` | no | — | Shell command that writes your public IPv4 to stdout (takes precedence over URL) |
 | `STATE_FILE` | no | `/var/lib/az-ddns/last_ip.txt` | Persists last IP across restarts |
 | `LOG_FILE` | no | (stdout) | Optional log file path |
 | `AZURE_CLIENT_ID` | no | — | Service principal client ID (Docker without Azure CLI) |
@@ -74,12 +75,32 @@ Then set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` in `az-
 
 ## How It Works
 
-1. Fetches current public IP from `IP_SERVICE_URL`
+1. Fetches current public IP via `IP_SERVICE_BINARY` (or `IP_SERVICE_URL`)
 2. Compares against last known IP (stored in `STATE_FILE`)
 3. If unchanged → exits (no API call)
 4. If changed → queries Azure DNS for current A record value
 5. Updates or creates the A record via `az network dns record-set`
 6. Stores new IP in `STATE_FILE`
+
+### Custom IP Command
+
+Set `IP_SERVICE_COMMAND` to any shell command that writes a plain IPv4 address to stdout:
+
+```bash
+# curl
+IP_SERVICE_COMMAND="curl -s ifconfig.me"
+
+# dig
+IP_SERVICE_COMMAND="dig +short myip.opendns.com @resolver1.opendns.com"
+
+# Custom script
+IP_SERVICE_COMMAND="/usr/local/bin/az-ddns-ip.sh"
+
+# Router query
+IP_SERVICE_COMMAND="ssh router 'ifconfig pppoe-wan | grep inet'"
+```
+
+Put it in `az-ddns.conf`. The default `az-ddns-ip.sh` is provided as a reference but not required.
 
 ## Security
 

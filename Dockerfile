@@ -10,6 +10,9 @@ RUN mkdir -p /etc/az-ddns /var/lib/az-ddns
 COPY az-ddns.sh /usr/local/bin/az-ddns.sh
 RUN chmod +x /usr/local/bin/az-ddns.sh
 
+COPY az-ddns-ip.sh /usr/local/bin/az-ddns-ip.sh
+RUN chmod +x /usr/local/bin/az-ddns-ip.sh
+
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 

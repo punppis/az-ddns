@@ -15,6 +15,10 @@ echo "Installing script to /usr/local/bin/az-ddns.sh..."
 cp "$(dirname "$0")/az-ddns.sh" /usr/local/bin/az-ddns.sh
 chmod 755 /usr/local/bin/az-ddns.sh
 
+echo "Installing IP helper to /usr/local/bin/az-ddns-ip.sh..."
+cp "$(dirname "$0")/az-ddns-ip.sh" /usr/local/bin/az-ddns-ip.sh
+chmod 755 /usr/local/bin/az-ddns-ip.sh
+
 # Install config if not already present
 if [[ ! -f /etc/az-ddns/az-ddns.conf ]]; then
     echo "Installing config to /etc/az-ddns/az-ddns.conf..."
