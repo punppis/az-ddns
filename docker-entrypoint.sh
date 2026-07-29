@@ -23,10 +23,13 @@ fi
 AZURE_HOST_CONFIG="${AZURE_HOST_CONFIG:-/host-azure}"
 AZURE_CONFIG_DIR="${AZURE_CONFIG_DIR:-${HOME}/.azure}"
 
-if [[ -d "$AZURE_HOST_CONFIG" ]] && [[ -n "$(ls -A "$AZURE_HOST_CONFIG" 2>/dev/null)" ]]; then
+if [[ -d "$AZURE_HOST_CONFIG" ]] && [[ -f "$AZURE_HOST_CONFIG/config" ]]; then
     echo "Copying Azure config from $AZURE_HOST_CONFIG to $AZURE_CONFIG_DIR..."
     mkdir -p "$AZURE_CONFIG_DIR"
-    cp -r "$AZURE_HOST_CONFIG/"* "$AZURE_CONFIG_DIR/"
+    # Copy only essential files (skip commands/ log dir — may have permission issues across UIDs)
+    for f in config msal_token_cache.json azureProfile.json; do
+        cp "$AZURE_HOST_CONFIG/$f" "$AZURE_CONFIG_DIR/" 2>/dev/null || true
+    done
     chmod -R u-w "$AZURE_CONFIG_DIR"
     export AZURE_CONFIG_DIR
 fi
